@@ -1,0 +1,28 @@
+[package]
+name = "magicmtn-provider-modal"
+version = "0.1.2"
+edition = "2024"
+license-file = "LICENSE"
+publish = false
+description = "Modal sandbox provider for MagicMtn"
+readme = "README.md"
+keywords = ["magicmtn", "modal", "sandbox"]
+include = ["src/**", "tests/**", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE", "requirements.txt", "package.sh"]
+
+[[bin]]
+name = "magicmtn-provider-modal"
+path = "src/main.rs"
+required-features = ["plugin"]
+
+[features]
+default = ["plugin"]
+plugin = ["dep:magicmtn-provider-framework", "tokio/macros", "tokio/rt"]
+
+[dependencies]
+magicmtn-sdk = "0.1.0"
+magicmtn-provider-framework = { version = "0.1.0", optional = true }
+anyhow = "1"
+serde_json = "1"
+tokio = { version = "1", features = ["process", "io-util", "time"] }
+uuid = "1"
+

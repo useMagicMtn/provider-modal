@@ -1,0 +1,155 @@
+import asyncio
+import json
+import shlex
+import importlib.util
+from pathlib import Path
+import sys
+from types import SimpleNamespace
+import unittest
+from unittest.mock import AsyncMock, Mock, patch
+
+
+class ExecTimeoutError(Exception):
+    pass
+
+
+async def stream(*chunks):
+    for chunk in chunks:
+        yield chunk
+
+
+def process(code=0, stdout=(), stderr=()):
+    return SimpleNamespace(stdout=stream(*stdout), stderr=stream(*stderr),
+                           wait=SimpleNamespace(aio=AsyncMock(return_value=code)))
+
+
+class BridgeTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.modal = SimpleNamespace(
+            App=SimpleNamespace(lookup=SimpleNamespace(aio=AsyncMock(return_value='app'))),
+            Image=SimpleNamespace(from_id=Mock(return_value='prepared-image')),
+            Sandbox=SimpleNamespace(create=SimpleNamespace(aio=AsyncMock()),
+                                    from_id=SimpleNamespace(aio=AsyncMock())))
+        spec = importlib.util.spec_from_file_location('bridge', Path(__file__).parents[1] / 'src/modal_bridge.py')
+        self.bridge = importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules, {'modal': self.modal, 'modal.exception': SimpleNamespace(ExecTimeoutError=ExecTimeoutError)}):
+            spec.loader.exec_module(self.bridge)
+        self.image = 'registry.example/sandbox@sha256:' + 'a' * 64
+        self.mapping = {'MAGICMTN_MODAL_PREPARED_IMAGES': json.dumps({self.image: 'im-verified'})}
+        self.tags = {'magicmtn':'modal','magicmtn_session':'session','magicmtn_image':self.image, 'magicmtn_runtime':'vm','magicmtn_user':'sandbox','magicmtn_prepared_image':'im-verified'}
+        self.sandbox = SimpleNamespace(
+            object_id='sb-test', exec=SimpleNamespace(aio=AsyncMock(return_value=process())),
+            terminate=SimpleNamespace(aio=AsyncMock()), poll=SimpleNamespace(aio=AsyncMock(return_value=None)),
+            get_tags=SimpleNamespace(aio=AsyncMock(return_value=self.tags)))
+        self.modal.Sandbox.create.aio.return_value = self.sandbox
+        self.modal.Sandbox.from_id.aio.return_value = self.sandbox
+        self.request = {'operation':'exec','sandbox':{'provider_id':'sb-test','metadata':{'image':self.image, 'runtime':'vm','user':'sandbox','prepared_image':'im-verified'}},
+                        'command':'echo','args':['literal; $value'], 'timeout_ms':1000,'max_output_bytes':4}
+
+    async def test_create_reattach_exec_and_terminate(self):
+        with patch.dict('os.environ', {**self.mapping, 'MAGICMTN_MODAL_APP':'test-app'}):
+            result = await self.bridge.dispatch({'operation':'create','image':self.image,'session':'session'})
+        self.assertEqual(result['provider_id'], 'sb-test')
+        self.assertNotIn('image_identity', result['metadata'])
+        options = self.modal.Sandbox.create.aio.call_args.kwargs
+        self.assertEqual(options['runtime'], 'vm')
+        self.assertEqual(options['workdir'], '/workspace')
+        self.assertEqual(options['image'], 'prepared-image')
+        self.modal.Image.from_id.assert_called_once_with('im-verified')
+        self.assertEqual(self.modal.Sandbox.create.aio.call_args.args[:3], ('/bin/su', '-s', '/bin/sh'))
+        self.assertEqual(self.sandbox.exec.aio.call_args.args[-1], 'sandbox')
+        self.assertFalse(options['block_network'])
+        self.assertEqual(options['timeout'], 3600)
+        self.assertNotIn('idle_timeout', options)
+        self.assertNotIn('secrets', options)
+        self.assertNotIn('env', options)
+        self.assertEqual(options['name'], 'magicmtn-session-session')
+        self.assertEqual(options['memory'], (512,512))
+        self.sandbox.exec.aio.return_value = process(7, [b'abcdefgh',b'ijkl'], [b'oops'])
+        result = await self.bridge.dispatch(self.request)
+        self.assertEqual(result['stdout'], 'abcd')
+        self.assertEqual(result['stderr'], 'oops')
+        self.assertEqual(result['exit_code'], 7)
+        self.assertTrue(result['truncated'])
+        self.sandbox.exec.aio.assert_called_with('/bin/su','-s','/bin/sh','-c',"exec echo 'literal; $value'",'sandbox',timeout=1,text=False,workdir='/workspace')
+        self.sandbox.exec.aio.return_value = process(0, [b'\xff\xff'])
+        result = await self.bridge.dispatch(self.request)
+        self.assertLessEqual(len(result['stdout'].encode()), 4)
+        self.assertTrue(result['truncated'])
+        await self.bridge.dispatch({'operation':'terminate','sandbox':self.request['sandbox']})
+        self.sandbox.terminate.aio.assert_awaited_once()
+
+    async def test_create_uses_requested_lifetime(self):
+        with patch.dict('os.environ', self.mapping):
+            await self.bridge.dispatch({'operation':'create','image':self.image,
+                                        'session':'session','ttl_seconds':43200})
+        self.assertEqual(self.modal.Sandbox.create.aio.call_args.kwargs['timeout'], 43200)
+        with self.assertRaises(self.bridge.ConfigurationError):
+            await self.bridge.dispatch({'operation':'create','image':self.image,
+                                        'session':'session','ttl_seconds':86401})
+
+    async def test_missing_malformed_or_unpinned_image_fails_before_allocation(self):
+        for configuration, image in [('', self.image), ('{invalid', self.image),
+                ('[]', self.image), ('{}', self.image),
+                (json.dumps({self.image: 'not-an-image-id'}), self.image),
+                (self.mapping['MAGICMTN_MODAL_PREPARED_IMAGES'], 'registry.example/sandbox:latest')]:
+            with self.subTest(configuration=configuration, image=image):
+                with patch.dict('os.environ', {'MAGICMTN_MODAL_PREPARED_IMAGES': configuration}):
+                    with self.assertRaises(self.bridge.ConfigurationError):
+                        await self.bridge.dispatch({'operation':'create','image':image,'session':'session'})
+        self.modal.App.lookup.aio.assert_not_awaited()
+        self.modal.Sandbox.create.aio.assert_not_awaited()
+
+    async def test_failed_user_readiness_terminates_sandbox(self):
+        self.sandbox.exec.aio.return_value = process(1)
+        with patch.dict('os.environ', self.mapping):
+            with self.assertRaisesRegex(RuntimeError, 'readiness'):
+                await self.bridge.dispatch({'operation':'create','image':self.image,'session':'session'})
+        self.sandbox.terminate.aio.assert_awaited_once()
+
+    async def test_legacy_cleanup_does_not_require_image_configuration(self):
+        self.sandbox.get_tags.aio.return_value = {
+            'magicmtn':'modal','magicmtn_session':'session','magicmtn_image':self.image}
+        with self.assertRaises(self.bridge.ConfigurationError):
+            await self.bridge.dispatch(self.request)
+        await self.bridge.dispatch({'operation':'terminate','sandbox':self.request['sandbox']})
+        self.sandbox.terminate.aio.assert_awaited_once()
+        self.sandbox.exec.aio.assert_not_awaited()
+
+    async def test_prepared_image_identity_mismatch_rejects_execution(self):
+        self.tags['magicmtn_prepared_image'] = 'im-other'
+        with self.assertRaises(self.bridge.ConfigurationError):
+            await self.bridge.dispatch(self.request)
+        self.sandbox.exec.aio.assert_not_awaited()
+
+    def test_shell_arguments_survive_user_switch_literally(self):
+        command = ['echo', "quotes' and spaces", '$(id)', '; touch /tmp/unsafe', 'line\nfeed']
+        wrapped = self.bridge.sandbox_command(command)
+        self.assertEqual(wrapped[:4], ['/bin/su', '-s', '/bin/sh', '-c'])
+        self.assertEqual(shlex.split(wrapped[4]), ['exec', *command])
+        self.assertEqual(wrapped[5], 'sandbox')
+
+    async def test_timeout_is_uncertain_and_not_replayed(self):
+        self.sandbox.exec.aio.return_value = process(-1)
+        result = await self.bridge.dispatch(self.request)
+        self.assertTrue(result['timed_out'])
+        self.assertIsNone(result['exit_code'])
+        self.sandbox.exec.aio.assert_awaited_once()
+
+    async def test_deadline_bounds_wait_and_output(self):
+        async def stall():
+            await asyncio.sleep(60)
+        self.request['timeout_ms'] = 1
+        self.sandbox.exec.aio.return_value.wait.aio.side_effect = stall
+        result = await self.bridge.dispatch(self.request)
+        self.assertTrue(result['timed_out'])
+        self.sandbox.exec.aio.assert_awaited_once()
+
+    async def test_rejects_changed_or_unmanaged_sandbox(self):
+        self.sandbox.get_tags.aio.return_value = {'magicmtn':'modal','magicmtn_session':'session','magicmtn_image':'changed'}
+        with self.assertRaises(RuntimeError):
+            await self.bridge.dispatch(self.request)
+        self.sandbox.get_tags.aio.return_value = {}
+        with self.assertRaises(RuntimeError):
+            await self.bridge.dispatch(self.request)
+        self.sandbox.exec.aio.assert_not_awaited()

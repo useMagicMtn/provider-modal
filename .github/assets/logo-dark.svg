@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 232" role="img" aria-label="MagicMtn mountain icon">
+  <title>MagicMtn mountain icon</title>
+  <g transform="translate(4 -22)" fill="#fff" stroke="#000" stroke-width="2" stroke-linejoin="round">
+    <polygon points="12,180 30,166 88,166 70,180"/>
+    <polygon points="70,180 88,166 88,224 70,238"/>
+    <polygon points="12,180 70,180 70,238 12,238"/>
+    <polygon points="76,180 94,166 152,166 134,180"/>
+    <polygon points="134,180 152,166 152,224 134,238"/>
+    <polygon points="76,180 134,180 134,238 76,238"/>
+    <polygon points="140,180 158,166 216,166 198,180"/>
+    <polygon points="198,180 216,166 216,224 198,238"/>
+    <polygon points="140,180 198,180 198,238 140,238"/>
+    <polygon points="204,180 222,166 280,166 262,180"/>
+    <polygon points="262,180 280,166 280,224 262,238"/>
+    <polygon points="204,180 262,180 262,238 204,238"/>
+    <polygon points="140,116 158,102 216,102 198,116"/>
+    <polygon points="198,116 216,102 216,160 198,174"/>
+    <polygon points="140,116 198,116 198,174 140,174"/>
+    <polygon points="204,116 222,102 280,102 262,116"/>
+    <polygon points="262,116 280,102 280,160 262,174"/>
+    <polygon points="204,116 262,116 262,174 204,174"/>
+    <polygon points="204,52 222,38 280,38 262,52"/>
+    <polygon points="262,52 280,38 280,96 262,110"/>
+    <polygon points="204,52 262,52 262,110 204,110"/>
+  </g>
+</svg>
