@@ -1,0 +1,5 @@
+build --incompatible_strict_action_env
+build --@rules_python//python/config_settings:python_version=3.13
+test --test_output=errors
+common --enable_bzlmod
+try-import %workspace%/.bazelrc.local

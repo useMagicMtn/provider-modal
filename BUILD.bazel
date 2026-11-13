@@ -1,0 +1,80 @@
+load("@magicmtn//bazel/rust:deps.bzl", "crate_deps")
+load("@modal_pip//:requirements.bzl", "requirement")
+load("@rules_python//python:defs.bzl", "py_binary", "py_test")
+load("@rules_rust//cargo:defs.bzl", "cargo_toml_env_vars")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["requirements.lock"])
+
+cargo_toml_env_vars(
+    name = "cargo_env",
+    src = "Cargo.toml",
+)
+
+py_binary(
+    name = "bridge",
+    srcs = ["src/modal_bridge.py"],
+    legacy_create_init = False,
+    main = "src/modal_bridge.py",
+    python_version = "3.13",
+    deps = [requirement("modal")],
+)
+
+py_test(
+    name = "modal_import_test",
+    srcs = ["tests/test_modal_import.py"],
+    legacy_create_init = False,
+    main = "tests/test_modal_import.py",
+    python_version = "3.13",
+    deps = [requirement("modal")],
+)
+
+rust_library(
+    name = "modal",
+    srcs = ["src/lib.rs"],
+    compile_data = ["src/modal_bridge.py"],
+    crate_name = "magicmtn_provider_modal",
+    edition = "2024",
+    rustc_env_files = [":cargo_env"],
+    deps = ["@magicmtn//sdk/rust/magicmtn-sdk:sdk"] + crate_deps([
+        "anyhow",
+        "serde_json",
+        "tokio",
+        "uuid",
+    ]),
+)
+
+rust_binary(
+    name = "provider",
+    srcs = ["src/main.rs"],
+    crate_name = "magicmtn_provider_modal_bin",
+    edition = "2024",
+    rustc_env_files = [":cargo_env"],
+    deps = [
+        ":modal",
+        "@magicmtn//sdk/rust/magicmtn-provider-framework:provider_framework",
+        "@magicmtn//sdk/rust/magicmtn-sdk:sdk",
+    ] + crate_deps([
+        "anyhow",
+        "tokio",
+    ]),
+)
+
+rust_test(
+    name = "unit_tests",
+    crate = ":modal",
+)
+
+py_test(
+    name = "bridge_test",
+    srcs = [
+        "tests/run_bridge_tests.py",
+        "tests/test_bridge.py",
+    ],
+    data = ["src/modal_bridge.py"],
+    legacy_create_init = False,
+    main = "tests/run_bridge_tests.py",
+    python_version = "3.13",
+)
