@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset=".github/assets/logo-dark.svg">
-    <img src=".github/assets/logo-light.svg" alt="MagicMtn" width="180">
+    <img src=".github/assets/logo-light.svg" alt="MagicMtn logo" width="180" height="180">
   </picture>
 </p>
 
