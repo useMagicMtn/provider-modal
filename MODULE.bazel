@@ -1,0 +1,22 @@
+module(
+    name = "magicmtn_provider_modal",
+    version = "0.1.2",
+)
+
+bazel_dep(name = "magicmtn", version = "0.1.0")
+bazel_dep(name = "rules_rust", version = "0.75.0")
+bazel_dep(name = "rules_python", version = "2.4.6")
+
+git_override(
+    module_name = "magicmtn",
+    commit = "97f61ade7f3b3083b804ec385b7695138b1b5b2e",
+    remote = "https://github.com/UseMagicMtn/magicmtn.git",
+)
+
+pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
+pip.parse(
+    hub_name = "modal_pip",
+    python_version = "3.13",
+    requirements_lock = "//:requirements.lock",
+)
+use_repo(pip, "modal_pip")

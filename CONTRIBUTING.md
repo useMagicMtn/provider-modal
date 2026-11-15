@@ -6,6 +6,45 @@ This provider implements MagicMtn's `SandboxBackend` interface using Modal's off
 
 ## Development setup
 
+### Bazel checks
+
+Install [Bazelisk](https://github.com/bazelbuild/bazelisk#installation), then run:
+
+```sh
+bazel build //:provider //:bridge
+bazel test //...
+```
+
+Bazel fetches the public core at the commit in `MODULE.bazel`, shares its Rust
+dependencies and SDK targets, and installs Python 3.13 with the hashed dependencies
+in `requirements.lock`. The bridge unit tests use fake Modal objects; the SDK
+import test checks the real installed package. These checks need no Modal account.
+
+To test a local core change:
+
+```sh
+bazel test --override_module=magicmtn=../magicmtn //...
+```
+
+The `Bazel provider` workflow builds and tests on native Linux x64, Linux ARM64,
+and macOS ARM64. Commit a full core SHA after the corresponding core changes have
+been published. The root build controls dependency overrides when cloud consumes
+this provider.
+
+After changing `requirements.txt`, regenerate the Python lock with
+[uv](https://docs.astral.sh/uv/getting-started/installation/):
+
+```sh
+uv pip compile --universal --generate-hashes --python-version 3.13 requirements.txt -o requirements.lock
+bazel test //...
+```
+
+The Rust executable embeds the bridge source. `//:bridge` assembles a runnable
+Python environment for the same source; production packaging supplies its Python
+interpreter through `MAGICMTN_MODAL_PYTHON`.
+
+### Cargo and live Modal setup
+
 On the machine running the MagicMtn server, install Python 3.11+ and the Modal SDK, then authenticate with your Modal account:
 
 ```sh
