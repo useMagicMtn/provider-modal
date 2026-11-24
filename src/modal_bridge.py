@@ -21,7 +21,7 @@ def sandbox_command(command):
     return ['/bin/su', '-s', '/bin/sh', '-c', 'exec ' + shlex.join(command), 'sandbox']
 
 
-def prepared_image(image):
+def prepared_image(image, client):
     if not re.fullmatch(r'.+@sha256:[0-9a-f]{64}', image):
         raise ConfigurationError('Modal requires an OCI image pinned by SHA-256 digest')
     try:
@@ -32,7 +32,7 @@ def prepared_image(image):
     if not isinstance(image_id, str) or not re.fullmatch(r'im-[A-Za-z0-9]+', image_id):
         raise ConfigurationError('Configure MAGICMTN_MODAL_PREPARED_IMAGES with the verified OCI digest mapped to its prepared Modal image ID')
     # A pinned object ID avoids mutable named-image aliases and inline builds.
-    return modal.Image.from_id(image_id), image_id
+    return modal.Image.from_id(image_id, client=client), image_id
 
 
 async def capture(stream, limit):
@@ -90,18 +90,31 @@ async def execute(sandbox, request):
     }
 
 
-async def dispatch(request):
+async def lookup_app(client):
+    app = await modal.App.lookup.aio(
+        os.environ.get('MAGICMTN_MODAL_APP', 'magicmtn'),
+        client=client, create_if_missing=client is None,
+    )
+    expected = os.environ.get('MAGICMTN_MODAL_APP_ID')
+    if expected is not None and app.app_id != expected:
+        raise ConfigurationError('Modal app ID differs from the configured account')
+    return app
+
+
+async def dispatch(request, client=None):
+    if request['operation'] == 'verify_account':
+        if client is None:
+            raise ConfigurationError('Modal credentials are required for account verification')
+        return (await lookup_app(client)).app_id
     if request['operation'] == 'create':
         ttl_seconds = request.get('ttl_seconds', 3600)
         if type(ttl_seconds) is not int or not 1 <= ttl_seconds <= 86400:
             raise ConfigurationError('Modal sandbox TTL must be 1 to 86400 seconds')
-        image, image_id = prepared_image(request['image'])
-        app = await modal.App.lookup.aio(
-            os.environ.get('MAGICMTN_MODAL_APP', 'magicmtn'), create_if_missing=True,
-        )
+        image, image_id = prepared_image(request['image'], client)
+        app = await lookup_app(client)
         sandbox = await modal.Sandbox.create.aio(
             *sandbox_command(['/bin/sh', '-c', 'while true; do sleep 3600; done']),
-            app=app, image=image, name='magicmtn-session-' + request['session'],
+            app=app, image=image, client=client, name='magicmtn-session-' + request['session'],
             tags={'magicmtn': 'modal', 'magicmtn_image': request['image'], 'magicmtn_session': request['session'],
                   'magicmtn_runtime': 'vm', 'magicmtn_user': 'sandbox', 'magicmtn_prepared_image': image_id},
             cpu=(1.0, 1.0), memory=(512, 512), timeout=ttl_seconds,
@@ -122,7 +135,7 @@ async def dispatch(request):
                          'runtime': 'vm', 'user': 'sandbox', 'prepared_image': image_id},
         }
     record = request['sandbox']
-    sandbox = await modal.Sandbox.from_id.aio(record['provider_id'])
+    sandbox = await modal.Sandbox.from_id.aio(record['provider_id'], client=client)
     tags = await sandbox.get_tags.aio()
     if tags.get('magicmtn') != 'modal' or not tags.get('magicmtn_session'):
         raise RuntimeError('sandbox is not managed by this provider')
@@ -148,7 +161,14 @@ async def dispatch(request):
 async def main():
     # Keep cloud control calls within the harness's existing creation deadline.
     async with asyncio.timeout(45):
-        return await dispatch(json.load(sys.stdin))
+        request, credential = json.load(sys.stdin)
+        if credential is None:
+            return await dispatch(request)
+        client = await modal.Client.from_credentials.aio(
+            credential['MODAL_TOKEN_ID'], credential['MODAL_TOKEN_SECRET'],
+        )
+        # The opened SDK client registers cleanup with asyncio's shutdown.
+        return await dispatch(request, client)
 
 
 if __name__ == '__main__':
