@@ -10,7 +10,7 @@ bazel_dep(name = "rules_python", version = "2.4.6")
 git_override(
     module_name = "magicmtn",
     commit = "718f692928cdff3a5d85ab28cece868af9ac2391",
-    remote = "https://github.com/UseMagicMtn/magicmtn.git",
+    remote = "https://github.com/useMagicMtn/magicmtn.git",
 )
 
 pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")

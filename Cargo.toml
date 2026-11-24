@@ -2,12 +2,28 @@
 name = "magicmtn-provider-modal"
 version = "0.1.3"
 edition = "2024"
-license-file = "LICENSE"
+license = "Apache-2.0"
 publish = false
 description = "Modal sandbox provider for MagicMtn"
+repository = "https://github.com/useMagicMtn/provider-modal"
 readme = "README.md"
 keywords = ["magicmtn", "modal", "sandbox"]
-include = ["src/**", "tests/**", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE", "requirements.txt", "package.sh"]
+include = [
+    "/.cargo/config.toml.example",
+    "/.github/assets/*.svg",
+    "/src/*.rs",
+    "/src/modal_bridge.py",
+    "/tests/*.py",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/CONTRIBUTING.md",
+    "/LICENSE",
+    "/README.md",
+    "/USAGE.md",
+    "/requirements.lock",
+    "/requirements.txt",
+    "/package.sh",
+]
 
 [package.metadata.magicmtn]
 protocol-version = 2

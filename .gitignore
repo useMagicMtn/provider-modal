@@ -2,6 +2,7 @@
 /dist/
 /.cargo/config.toml
 /.venv/
+/modal-credentials.json
 __pycache__/
 *.pyc
 .DS_Store

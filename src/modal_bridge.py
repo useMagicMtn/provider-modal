@@ -1,4 +1,4 @@
-"""Private adapter embedded in the Rust provider; stdout carries one JSON result."""
+"""Embedded Modal adapter. Stdout carries one JSON result."""
 import asyncio
 import json
 import math
@@ -159,7 +159,7 @@ async def dispatch(request, client=None):
 
 
 async def main():
-    # Keep cloud control calls within the harness's existing creation deadline.
+    # Keep Modal API calls within the provider's request deadline.
     async with asyncio.timeout(45):
         request, credential = json.load(sys.stdin)
         if credential is None:
