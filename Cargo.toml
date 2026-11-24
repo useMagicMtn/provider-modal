@@ -1,6 +1,6 @@
 [package]
 name = "magicmtn-provider-modal"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 license-file = "LICENSE"
 publish = false
@@ -8,6 +8,9 @@ description = "Modal sandbox provider for MagicMtn"
 readme = "README.md"
 keywords = ["magicmtn", "modal", "sandbox"]
 include = ["src/**", "tests/**", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE", "requirements.txt", "package.sh"]
+
+[package.metadata.magicmtn]
+protocol-version = 2
 
 [[bin]]
 name = "magicmtn-provider-modal"
@@ -25,4 +28,4 @@ anyhow = "1"
 serde_json = "1"
 tokio = { version = "1", features = ["process", "io-util", "time"] }
 uuid = "1"
-
+zeroize = "1.8"

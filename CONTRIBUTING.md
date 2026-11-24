@@ -54,7 +54,9 @@ python3 -m venv .venv
 export MAGICMTN_MODAL_PYTHON="$PWD/.venv/bin/python"
 ```
 
-Pass `MAGICMTN_MODAL_PYTHON` to the server process before starting it. You can also authenticate with `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` in that process's environment. Credentials stay on the host and are never injected into sandboxes. Set `MAGICMTN_MODAL_APP` to choose a Modal app; the default is `magicmtn`.
+Pass `MAGICMTN_MODAL_PYTHON` to the server process. Provision a Modal app in the workspace and environment where the provider runs, and set `MAGICMTN_MODAL_APP` to its name. The default name is `magicmtn`. Set `MAGICMTN_MODAL_APP_ID` to pin the app’s object ID during staging.
+
+The protocol v2 startup exchange accepts a JSON bundle with `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`. The bridge passes them to the Modal SDK over its stdin. Verification looks up the configured app using the supplied credentials and returns its app ID, which remains the same when the token rotates. Cloud stores the bundle in Secrets Manager and uses that ID as the expected provider account. The app must exist before credential preparation.
 
 For local development, keep this repo beside the private `magicmtn` checkout and create an ignored `.cargo/config.toml` to use its SDK crates:
 
@@ -71,12 +73,7 @@ cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 ```
 
-Unit tests use fake Modal objects and do not create cloud resources. The sibling
-Cloud repository's opt-in `scripts/check-modal-provider.py` exercises the
-compiled provider RPC against a prepared image, checks user identity and literal
-arguments, runs all six real-Pi supervisor tests with mock inference, and
-terminates the test sandbox. Pass Modal authentication only in the caller's
-environment and set `MAGICMTN_MODAL_PYTHON` to the SDK interpreter. For library embedding, disable default features and construct `ModalProvider` with the Python interpreter path.
+Unit tests use fake Modal objects without allocating cloud resources. The rotation test creates and operates on a sandbox with two explicitly authenticated clients. For a live staging check, use two tokens for the same configured app. Create a sandbox, run a command, rotate to the second token, then run another command and terminate the same sandbox. For library embedding, disable default features and construct `ModalProvider` with the Python interpreter path.
 
 ## Build and install for development
 
@@ -84,7 +81,7 @@ For maintainer development only, build with a Rust toolchain supporting edition 
 
 ```sh
 ./package.sh
-magic provider add --file dist/modal-0.1.2-macos-aarch64.tar.gz
+magic provider install --file dist/modal-0.1.3-macos-aarch64.tar.gz
 ```
 
 Use the archive matching your platform. MagicMtn stores the executable privately; it does not need to be on `PATH`. The Python adapter is embedded in the executable, but its Python interpreter and Modal SDK must be installed separately.

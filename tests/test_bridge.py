@@ -26,7 +26,7 @@ def process(code=0, stdout=(), stderr=()):
 class BridgeTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.modal = SimpleNamespace(
-            App=SimpleNamespace(lookup=SimpleNamespace(aio=AsyncMock(return_value='app'))),
+            App=SimpleNamespace(lookup=SimpleNamespace(aio=AsyncMock(return_value=SimpleNamespace(app_id='ap-TestApp')))),
             Image=SimpleNamespace(from_id=Mock(return_value='prepared-image')),
             Sandbox=SimpleNamespace(create=SimpleNamespace(aio=AsyncMock()),
                                     from_id=SimpleNamespace(aio=AsyncMock())))
@@ -55,7 +55,7 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(options['runtime'], 'vm')
         self.assertEqual(options['workdir'], '/workspace')
         self.assertEqual(options['image'], 'prepared-image')
-        self.modal.Image.from_id.assert_called_once_with('im-verified')
+        self.modal.Image.from_id.assert_called_once_with('im-verified', client=None)
         self.assertEqual(self.modal.Sandbox.create.aio.call_args.args[:3], ('/bin/su', '-s', '/bin/sh'))
         self.assertEqual(self.sandbox.exec.aio.call_args.args[-1], 'sandbox')
         self.assertFalse(options['block_network'])
@@ -78,6 +78,47 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result['truncated'])
         await self.bridge.dispatch({'operation':'terminate','sandbox':self.request['sandbox']})
         self.sandbox.terminate.aio.assert_awaited_once()
+
+    async def test_explicit_clients_verify_and_keep_access_after_rotation(self):
+        first_client = object()
+        second_client = object()
+        constructor = AsyncMock(side_effect=[first_client, first_client, second_client, second_client, second_client])
+        self.modal.Client = SimpleNamespace(from_credentials=SimpleNamespace(aio=constructor))
+
+        async def invoke(request, token):
+            payload = [request, {'MODAL_TOKEN_ID': token, 'MODAL_TOKEN_SECRET': 'fixture-secret'}]
+            with patch.object(self.bridge.json, 'load', return_value=payload):
+                return await self.bridge.main()
+
+        verify = {'operation': 'verify_account'}
+        create = {'operation': 'create', 'image': self.image, 'session': 'session'}
+        with patch.dict('os.environ', {**self.mapping, 'MAGICMTN_MODAL_APP_ID': 'ap-TestApp'}):
+            self.assertEqual(await invoke(verify, 'first-token'), 'ap-TestApp')
+            sandbox = await invoke(create, 'first-token')
+            self.assertEqual(await invoke(verify, 'second-token'), 'ap-TestApp')
+            self.assertEqual(sandbox['provider_id'], self.request['sandbox']['provider_id'])
+            await invoke(self.request, 'second-token')
+            await invoke({'operation': 'terminate', 'sandbox': sandbox}, 'second-token')
+
+        constructor.assert_any_await('first-token', 'fixture-secret')
+        constructor.assert_awaited_with('second-token', 'fixture-secret')
+        for invocation in self.modal.App.lookup.aio.await_args_list:
+            self.assertFalse(invocation.kwargs['create_if_missing'])
+        self.modal.Image.from_id.assert_called_once_with('im-verified', client=first_client)
+        options = self.modal.Sandbox.create.aio.call_args.kwargs
+        self.assertIs(options['client'], first_client)
+        self.assertNotIn('env', options)
+        self.assertNotIn('secrets', options)
+        self.modal.Sandbox.from_id.aio.assert_awaited_with(sandbox['provider_id'], client=second_client)
+        self.sandbox.terminate.aio.assert_awaited_once()
+
+    async def test_changed_app_identity_fails_before_allocation(self):
+        client = object()
+        request = {'operation': 'create', 'image': self.image, 'session': 'session'}
+        with patch.dict('os.environ', {**self.mapping, 'MAGICMTN_MODAL_APP_ID': 'ap-OtherApp'}):
+            with self.assertRaises(self.bridge.ConfigurationError):
+                await self.bridge.dispatch(request, client)
+        self.modal.Sandbox.create.aio.assert_not_awaited()
 
     async def test_create_uses_requested_lifetime(self):
         with patch.dict('os.environ', self.mapping):

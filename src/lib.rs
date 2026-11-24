@@ -1,8 +1,9 @@
 //! Modal sandboxes through the official Python SDK; the adapter is embedded in the plugin.
 use anyhow::{Context, Result, bail, ensure};
+use magicmtn_sdk::plugin::CredentialValues;
 use magicmtn_sdk::{BoxFuture, ExecResult, ProviderSandbox, SandboxBackend, ScpDirection};
 use serde_json::{Value, json};
-use std::{path::Path, process::Stdio, time::Duration};
+use std::{path::Path, process::Stdio, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     process::Command,
@@ -14,18 +15,45 @@ const ADAPTER: &str = include_str!("modal_bridge.py");
 #[derive(Clone, Debug)]
 pub struct ModalProvider {
     python: String,
+    credential: Option<Arc<CredentialValues>>,
 }
 impl ModalProvider {
     pub fn new(python: impl Into<String>) -> Self {
         Self {
             python: python.into(),
+            credential: None,
         }
     }
     pub fn from_env() -> Self {
         Self::new(std::env::var("MAGICMTN_MODAL_PYTHON").unwrap_or_else(|_| "python3".into()))
     }
+    pub fn with_credential(mut self, credential: CredentialValues) -> Self {
+        self.credential = Some(Arc::new(credential));
+        self
+    }
+
+    pub async fn verify_account(&self) -> Result<String> {
+        ensure!(self.credential.is_some(), "Modal credentials are required");
+        let result = self.call(json!({"operation": "verify_account"})).await?;
+        let app_id = result.as_str().context("Modal did not return an app ID")?;
+        ensure!(
+            app_id.starts_with("ap-")
+                && app_id.len() <= 128
+                && app_id[3..].bytes().all(|byte| byte.is_ascii_alphanumeric())
+                && app_id.len() > 3,
+            "invalid Modal app ID"
+        );
+        Ok(app_id.to_owned())
+    }
+
     async fn call(&self, request: Value) -> Result<Value> {
-        let mut child = Command::new(&self.python)
+        let mut command = Command::new(&self.python);
+        if self.credential.is_some() {
+            command
+                .env_remove("MODAL_TOKEN_ID")
+                .env_remove("MODAL_TOKEN_SECRET");
+        }
+        let mut child = command
             .args(["-c", ADAPTER])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -36,7 +64,12 @@ impl ModalProvider {
         let mut input = child.stdin.take().context("adapter stdin missing")?;
         let output = child.stdout.take().context("adapter stdout missing")?;
         tokio::time::timeout(Duration::from_secs(55), async {
-            input.write_all(&serde_json::to_vec(&request)?).await?;
+            let payload = zeroize::Zeroizing::new(serde_json::to_vec(&(
+                &request,
+                self.credential.as_deref(),
+            ))?);
+            input.write_all(&payload).await?;
+            drop(payload);
             drop(input);
             let mut bytes = Vec::new();
             output.take(256 * 1024 + 1).read_to_end(&mut bytes).await?;

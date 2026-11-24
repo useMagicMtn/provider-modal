@@ -43,6 +43,7 @@ rust_library(
         "serde_json",
         "tokio",
         "uuid",
+        "zeroize",
     ]),
 )
 
