@@ -11,7 +11,7 @@ Run MagicMtn sandboxes on [Modal](https://modal.com/). Launch a Linux VM from a 
 
 ## Set up Modal
 
-Use a Modal workspace with a token and a Linux AMD64 sandbox image. Build the image in Modal and map its exact OCI digest to the resulting Modal image ID. The [setup guide](USAGE.md#prepare-a-sandbox-image) includes a preparation command for the MagicMtn Canonical image.
+Use a Modal workspace with a token and an app named `magicmtn`. MagicMtn prepares Canonical or your custom Linux AMD64 image on Modal and saves the resulting image ID locally. See the [setup guide](USAGE.md#prepare-images-with-magicmtn).
 
 ## Build and install
 
@@ -23,14 +23,15 @@ test -f .cargo/config.toml || cp .cargo/config.toml.example .cargo/config.toml
 magic provider install --file PATH_TO_PACKAGE
 ```
 
-Replace `PATH_TO_PACKAGE` with the path printed by `package.sh`. Start the local server with the Modal app and image mapping, then configure the token with `magic --local provider configure modal --secret-file ./modal-credentials.json`. Follow the [setup guide](USAGE.md#configure-a-standalone-server) for the file format and environment settings.
+Replace `PATH_TO_PACKAGE` with the path printed by `package.sh`. Start the local server, then configure the token with `magic --local provider configure modal --secret-file ./modal-credentials.json`. Follow the [setup guide](USAGE.md#prepare-images-with-magicmtn) for image preparation.
 
 ## Run a sandbox
 
-Set `IMAGE` to the same digest-pinned reference used in the image mapping.
+Prepare Canonical and create a sandbox from that catalog selection:
 
 ```sh
-sandbox_id=$(magic --local computer new --provider modal --image "$IMAGE")
+magic --local images prepare canonical --provider modal
+sandbox_id=$(magic --local computer new --provider modal --image canonical)
 magic --local computer exec "$sandbox_id" -- /bin/echo "Hello from Modal"
 magic --local computer terminate "$sandbox_id" --yes
 ```

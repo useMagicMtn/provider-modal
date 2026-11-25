@@ -20,53 +20,45 @@ On a dedicated host with your own Python installation under `/usr/local`, instal
 PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin python3 -s -c 'import sys, modal; assert sys.version_info >= (3, 11); assert modal.__version__ == "1.6.1"; print(sys.executable)'
 ```
 
-## Prepare a sandbox image
+## Prepare images with MagicMtn
 
-Select the `linux/amd64` digest of a [MagicMtn Canonical image](https://github.com/useMagicMtn/magicmtn/blob/main/docs/canonical-image-release.md) or a compatible OCI image. A compatible image provides Python, `/bin/sh`, `/bin/su`, an executable `/usr/local/bin/magicmtn-sandbox-agent`, and a `sandbox` user with UID and GID `10001` that can write to `/workspace`.
-
-Set `IMAGE` to the full reference with its SHA-256 digest and `MAGICMTN_MODAL_APP` to an app name in your Modal environment. The example uses a public registry image. For other registries, configure access during [image import](https://modal.com/docs/guide/existing-images).
-
-```sh
-export IMAGE='ghcr.io/usemagicmtn/canonical@sha256:REPLACE_WITH_AMD64_DIGEST'
-export MAGICMTN_MODAL_APP=magicmtn
-
-prepared_image=$(.venv/bin/python - <<'PY'
-import os
-
-import modal
-
-app = modal.App.lookup(os.environ["MAGICMTN_MODAL_APP"], create_if_missing=True)
-image = modal.Image.from_registry(os.environ["IMAGE"]).build(app=app)
-print(image.object_id)
-PY
-)
-export MAGICMTN_MODAL_PREPARED_IMAGES=$(.venv/bin/python -c 'import json, sys; print(json.dumps({sys.argv[1]: sys.argv[2]}))' "$IMAGE" "$prepared_image")
-```
-
-Save the JSON mapping for future server starts. Set `IMAGE` to the same reference when creating a sandbox. Keep mappings for any image digests you still launch.
-
-## Configure a standalone server
-
-Stop the server before installing the provider archive. Start it from the terminal where you exported `MAGICMTN_MODAL_APP` and `MAGICMTN_MODAL_PREPARED_IMAGES`.
+Start the local server. The Modal app must already exist in the token's environment.
 
 ```sh
 magic server start
 ```
 
-In another terminal, create a file named `modal-credentials.json` with `umask 077`. Fill in both values from your [Modal API token](https://modal.com/settings).
+Save your token in a private file named `modal-credentials.json`:
 
 ```json
 {
-  "MODAL_TOKEN_ID": "REPLACE_WITH_TOKEN_ID",
-  "MODAL_TOKEN_SECRET": "REPLACE_WITH_TOKEN_SECRET"
+  "MODAL_TOKEN_ID": "YOUR_TOKEN_ID",
+  "MODAL_TOKEN_SECRET": "YOUR_TOKEN_SECRET"
 }
 ```
 
+In another terminal:
+
 ```sh
 magic --local provider configure modal --secret-file ./modal-credentials.json
+magic --local images list
+magic --local images prepare canonical --provider modal
+magic --local computer new --image canonical --provider modal
 ```
 
-The host verifies the token against the configured app and saves the credential. To rotate a token for that app, run the same command with the replacement bundle. Then use the [README commands](README.md#run-a-sandbox) to create, exercise, and terminate a sandbox.
+Preparation imports Canonical's immutable AMD64 image into your Modal app, validates its runtime and Pi in a temporary sandbox, cleans up that sandbox, and saves the prepared image ID in the local deployment. Repeating the command reuses the saved preparation. No image-ID mapping or Canonical edit is needed.
+
+Register an existing custom image with a new name:
+
+```sh
+magic --local images add my-dev --from ghcr.io/my-org/dev:1.0
+magic --local images prepare my-dev --provider modal
+magic --local computer new --image my-dev --provider modal
+```
+
+The image must be readable from its registry and include Python, Pi, `/bin/sh`, `/bin/su`, an executable `/usr/local/bin/magicmtn-sandbox-agent`, and a `sandbox` user with UID and GID 10001 that can write to `/workspace`. Preparation validates your image without modifying it. A failed validation cleans up the temporary sandbox and leaves the image unavailable for named-image launches.
+
+The encrypted credential store retains the token locally. Image preparation uses the verified app connection and records the provider artifact separately for each connection, provider release, platform, and digest. Existing sandboxes retain their frozen image and mapping across provider upgrades.
 
 ## SDK host integration
 
