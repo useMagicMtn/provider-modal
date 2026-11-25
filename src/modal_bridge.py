@@ -122,6 +122,8 @@ async def dispatch(request, client=None):
         reference = request['image']
         if not re.fullmatch(r'[a-zA-Z0-9._:/-]+@sha256:[0-9a-f]{64}', reference):
             raise ConfigurationError('Image preparation requires an immutable OCI digest')
+        # Use the builder supported by this SDK instead of legacy account defaults.
+        os.environ['MODAL_IMAGE_BUILDER_VERSION'] = '2025.06'
         app = await lookup_app(client)
         image = modal.Image.from_registry(reference)
         await image.build.aio(app=app)

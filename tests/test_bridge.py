@@ -109,7 +109,9 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         image = SimpleNamespace(object_id='im-new', build=SimpleNamespace(aio=AsyncMock()))
         self.modal.Image.from_registry = Mock(return_value=image)
         client = object()
-        result = await self.bridge.dispatch({'operation': 'prepare_image', 'image': self.image}, client)
+        with patch.dict('os.environ', {'MODAL_IMAGE_BUILDER_VERSION': '2023.12'}):
+            result = await self.bridge.dispatch({'operation': 'prepare_image', 'image': self.image}, client)
+            self.assertEqual(__import__('os').environ['MODAL_IMAGE_BUILDER_VERSION'], '2025.06')
         self.modal.Image.from_registry.assert_called_once_with(self.image)
         image.build.aio.assert_awaited_once_with(app=self.modal.App.lookup.aio.return_value)
         self.assertEqual(result['platform'], 'linux/amd64')
