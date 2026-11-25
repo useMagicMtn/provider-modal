@@ -261,6 +261,36 @@ impl SandboxBackend for ModalProvider {
     }
 }
 
+impl magicmtn_sdk::provider_setup::ProviderSetup for ModalProvider {
+    fn configure<'a>(
+        &'a self,
+        options: &'a std::collections::BTreeMap<String, String>,
+    ) -> magicmtn_sdk::BoxFuture<'a, magicmtn_sdk::provider_setup::ConfiguredConnection> {
+        Box::pin(async move {
+            ensure!(self.credential.is_some(), "Modal credentials are required");
+            let connection: magicmtn_sdk::provider_setup::ConfiguredConnection =
+                serde_json::from_value(
+                    self.call(json!({"operation":"configure", "options":options}))
+                        .await?,
+                )?;
+            connection.validate()?;
+            ensure!(
+                connection.account.starts_with("ap-")
+                    && connection.account.len() > 3
+                    && connection.account.len() <= 128
+                    && connection.account[3..]
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric()),
+                "invalid Modal app ID"
+            );
+            Ok(connection)
+        })
+    }
+    fn verify(&self) -> magicmtn_sdk::BoxFuture<'_, String> {
+        Box::pin(self.verify_account())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

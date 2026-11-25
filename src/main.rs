@@ -3,25 +3,35 @@ use magicmtn_provider_modal::ModalProvider;
 use magicmtn_sdk::{
     BoxFuture, SandboxBackend,
     plugin::{Capabilities, CredentialSpec, Operation, SandboxOperation::*, Value},
+    provider_setup::{ConfigurationOption, SetupSpec},
 };
 use std::sync::Arc;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    magicmtn_provider_framework::run_credentialed(
+    let capabilities =
+        Capabilities::sandbox(vec![PrepareImage, Create, Terminate, Exec, ExecBounded]);
+    let setup = SetupSpec {
+        options: [(
+            "app".into(),
+            ConfigurationOption {
+                description: "Modal app name".into(),
+                default: Some("magicmtn".into()),
+            },
+        )]
+        .into(),
+    };
+    magicmtn_provider_framework::run_credentialed_with_setup(
         "modal",
         env!("CARGO_PKG_VERSION"),
-        Capabilities::sandbox(vec![PrepareImage, Create, Terminate, Exec, ExecBounded]),
+        capabilities,
         CredentialSpec {
             fields: vec!["MODAL_TOKEN_ID".into(), "MODAL_TOKEN_SECRET".into()],
         },
-        |credential, verify_account| async move {
+        setup,
+        |credential| async move {
             let provider = Arc::new(ModalProvider::from_env().with_credential(credential));
-            let account = if verify_account {
-                Some(provider.verify_account().await?)
-            } else {
-                None
-            };
+            let backend = provider.clone();
             let dispatch = move |operation| -> BoxFuture<'static, Value> {
                 let provider = provider.clone();
                 Box::pin(async move {
@@ -68,7 +78,7 @@ async fn main() -> Result<()> {
                     }
                 })
             };
-            Ok((account, dispatch))
+            Ok((backend, dispatch))
         },
     )
     .await

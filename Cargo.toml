@@ -1,6 +1,6 @@
 [package]
 name = "magicmtn-provider-modal"
-version = "0.1.4"
+version = "0.2.0"
 edition = "2024"
 license = "Apache-2.0"
 publish = false
@@ -14,6 +14,7 @@ include = [
     "/src/*.rs",
     "/src/modal_bridge.py",
     "/tests/*.py",
+    "/tests/*.rs",
     "/Cargo.toml",
     "/Cargo.lock",
     "/CONTRIBUTING.md",
@@ -23,6 +24,7 @@ include = [
     "/requirements.lock",
     "/requirements.txt",
     "/package.sh",
+    "/scripts/build-runtime.py",
 ]
 
 [package.metadata.magicmtn]

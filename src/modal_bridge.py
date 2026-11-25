@@ -93,7 +93,7 @@ async def execute(sandbox, request):
 async def lookup_app(client):
     app = await modal.App.lookup.aio(
         os.environ.get('MAGICMTN_MODAL_APP', 'magicmtn'),
-        client=client, create_if_missing=client is None,
+        client=client, create_if_missing=False,
     )
     expected = os.environ.get('MAGICMTN_MODAL_APP_ID')
     if expected is not None and app.app_id != expected:
@@ -102,6 +102,22 @@ async def lookup_app(client):
 
 
 async def dispatch(request, client=None):
+    if request['operation'] == 'configure':
+        if client is None:
+            raise ConfigurationError('Modal credentials are required for configuration')
+        options = request.get('options', {})
+        if not isinstance(options, dict) or set(options) - {'app'}:
+            raise ConfigurationError('Unknown Modal setup options')
+        name = options.get('app', os.environ.get('MAGICMTN_MODAL_APP', 'magicmtn'))
+        if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}', name):
+            raise ConfigurationError('Invalid Modal app name')
+        expected = os.environ.get('MAGICMTN_MODAL_APP_ID')
+        # Rotation and reconfiguration must not create replacement resources.
+        app = await modal.App.lookup.aio(name, client=client, create_if_missing=expected is None)
+        if expected is not None and app.app_id != expected:
+            raise ConfigurationError('Modal app ID differs from the configured account')
+        return {'account': app.app_id,
+                'configuration': {'MAGICMTN_MODAL_APP': name, 'MAGICMTN_MODAL_APP_ID': app.app_id}}
     if request['operation'] == 'prepare_image':
         reference = request['image']
         if not re.fullmatch(r'[a-zA-Z0-9._:/-]+@sha256:[0-9a-f]{64}', reference):

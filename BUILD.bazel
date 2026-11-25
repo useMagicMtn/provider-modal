@@ -79,3 +79,13 @@ py_test(
     main = "tests/run_bridge_tests.py",
     python_version = "3.13",
 )
+
+rust_test(
+    name = "setup_protocol_test",
+    srcs = ["tests/setup_protocol.rs"],
+    data = [":provider"],
+    env = {"MAGICMTN_TEST_PROVIDER": "$(rootpath :provider)"},
+    crate_features = ["plugin"],
+    edition = "2024",
+    deps = crate_deps(["serde_json"]),
+)

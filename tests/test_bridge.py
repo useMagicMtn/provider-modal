@@ -79,6 +79,32 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         await self.bridge.dispatch({'operation':'terminate','sandbox':self.request['sandbox']})
         self.sandbox.terminate.aio.assert_awaited_once()
 
+    async def test_configuration_creates_once_and_verification_never_creates(self):
+        client = object()
+        with patch.dict('os.environ', {}, clear=True):
+            result = await self.bridge.dispatch({'operation': 'configure', 'options': {'app': 'my-app'}}, client)
+        self.assertEqual(result, {'account': 'ap-TestApp', 'configuration': {'MAGICMTN_MODAL_APP': 'my-app', 'MAGICMTN_MODAL_APP_ID': 'ap-TestApp'}})
+        self.modal.App.lookup.aio.assert_awaited_with('my-app', client=client, create_if_missing=True)
+        with patch.dict('os.environ', result['configuration'], clear=True):
+            self.assertEqual(await self.bridge.dispatch({'operation': 'configure', 'options': {}}, client), result)
+            self.modal.App.lookup.aio.assert_awaited_with('my-app', client=client, create_if_missing=False)
+            self.assertEqual(await self.bridge.dispatch({'operation': 'verify_account'}, client), 'ap-TestApp')
+            self.modal.App.lookup.aio.assert_awaited_with('my-app', client=client, create_if_missing=False)
+            self.modal.App.lookup.aio.return_value = SimpleNamespace(app_id='ap-Replacement')
+            with self.assertRaisesRegex(self.bridge.ConfigurationError, 'differs'):
+                await self.bridge.dispatch({'operation': 'configure', 'options': {}}, client)
+            self.modal.App.lookup.aio.side_effect = RuntimeError('app missing')
+            with self.assertRaisesRegex(RuntimeError, 'app missing'):
+                await self.bridge.dispatch({'operation': 'verify_account'}, client)
+            self.modal.App.lookup.aio.assert_awaited_with('my-app', client=client, create_if_missing=False)
+        self.modal.Sandbox.create.aio.assert_not_awaited()
+
+    async def test_configuration_validates_options_before_provider_calls(self):
+        for options in ({'unknown': 'value'}, {'app': '../app'}, {'app': ''}):
+            with self.assertRaises(self.bridge.ConfigurationError):
+                await self.bridge.dispatch({'operation': 'configure', 'options': options}, object())
+        self.modal.App.lookup.aio.assert_not_awaited()
+
     async def test_prepare_imports_the_exact_image_validates_and_cleans_up(self):
         image = SimpleNamespace(object_id='im-new', build=SimpleNamespace(aio=AsyncMock()))
         self.modal.Image.from_registry = Mock(return_value=image)
