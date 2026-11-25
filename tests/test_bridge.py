@@ -79,6 +79,32 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         await self.bridge.dispatch({'operation':'terminate','sandbox':self.request['sandbox']})
         self.sandbox.terminate.aio.assert_awaited_once()
 
+    async def test_prepare_imports_the_exact_image_validates_and_cleans_up(self):
+        image = SimpleNamespace(object_id='im-new', build=SimpleNamespace(aio=AsyncMock()))
+        self.modal.Image.from_registry = Mock(return_value=image)
+        client = object()
+        result = await self.bridge.dispatch({'operation': 'prepare_image', 'image': self.image}, client)
+        self.modal.Image.from_registry.assert_called_once_with(self.image)
+        image.build.aio.assert_awaited_once_with(app=self.modal.App.lookup.aio.return_value)
+        self.assertEqual(result['platform'], 'linux/amd64')
+        self.assertEqual(result['artifact'], 'im-new')
+        self.assertEqual(json.loads(result['configuration']['MAGICMTN_MODAL_PREPARED_IMAGES']), {self.image: 'im-new'})
+        self.assertEqual(self.modal.Sandbox.create.aio.call_args.kwargs['timeout'], 120)
+        self.sandbox.terminate.aio.assert_awaited_once()
+
+    async def test_failed_image_validation_always_cleans_up(self):
+        image = SimpleNamespace(object_id='im-new', build=SimpleNamespace(aio=AsyncMock()))
+        self.modal.Image.from_registry = Mock(return_value=image)
+        self.sandbox.exec.aio.return_value = process(1)
+        with self.assertRaisesRegex(self.bridge.ConfigurationError, 'sandbox runtime'):
+            await self.bridge.dispatch({'operation': 'prepare_image', 'image': self.image})
+        self.sandbox.terminate.aio.assert_awaited_once()
+
+    async def test_prepare_rejects_mutable_tags_before_any_provider_work(self):
+        with self.assertRaises(self.bridge.ConfigurationError):
+            await self.bridge.dispatch({'operation': 'prepare_image', 'image': 'example/image:latest'})
+        self.modal.App.lookup.aio.assert_not_awaited()
+
     async def test_explicit_clients_verify_and_keep_access_after_rotation(self):
         first_client = object()
         second_client = object()

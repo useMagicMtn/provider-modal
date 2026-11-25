@@ -102,6 +102,31 @@ async def lookup_app(client):
 
 
 async def dispatch(request, client=None):
+    if request['operation'] == 'prepare_image':
+        reference = request['image']
+        if not re.fullmatch(r'[a-zA-Z0-9._:/-]+@sha256:[0-9a-f]{64}', reference):
+            raise ConfigurationError('Image preparation requires an immutable OCI digest')
+        app = await lookup_app(client)
+        image = modal.Image.from_registry(reference)
+        await image.build.aio(app=app)
+        sandbox = await modal.Sandbox.create.aio(
+            *sandbox_command(['/bin/sh', '-c', 'while true; do sleep 3600; done']),
+            app=app, image=image, client=client, runtime='vm', workdir='/workspace',
+            timeout=120, cpu=(1.0, 1.0), memory=(512, 512),
+            tags={'magicmtn': 'modal-image-preparation', 'magicmtn_image': reference},
+        )
+        try:
+            probe = await sandbox.exec.aio(*sandbox_command(['python3', '-c',
+                "import os,shutil,subprocess;assert os.getuid()==10001 and os.getgid()==10001;assert os.access('/workspace',os.W_OK);assert os.access('/usr/local/bin/magicmtn-sandbox-agent',os.X_OK);assert shutil.which('pi');subprocess.run(['pi','--version'],check=True,stdout=subprocess.DEVNULL)"]),
+                timeout=30, workdir='/workspace')
+            if await probe.wait.aio() != 0:
+                raise ConfigurationError('Image must include the MagicMtn sandbox runtime, Pi, and a writable /workspace for sandbox user 10001')
+        finally:
+            await sandbox.terminate.aio()
+        repository, digest = reference.rsplit('@', 1)
+        return {'image': {'repository': repository, 'digest': digest},
+                'platform': 'linux/amd64', 'artifact': image.object_id,
+                'configuration': {'MAGICMTN_MODAL_PREPARED_IMAGES': json.dumps({reference: image.object_id})}}
     if request['operation'] == 'verify_account':
         if client is None:
             raise ConfigurationError('Modal credentials are required for account verification')
@@ -160,8 +185,8 @@ async def dispatch(request, client=None):
 
 async def main():
     # Keep Modal API calls within the provider's request deadline.
-    async with asyncio.timeout(45):
-        request, credential = json.load(sys.stdin)
+    request, credential = json.load(sys.stdin)
+    async with asyncio.timeout(1600 if request.get('operation') == 'prepare_image' else 45):
         if credential is None:
             return await dispatch(request)
         client = await modal.Client.from_credentials.aio(

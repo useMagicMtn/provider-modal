@@ -47,6 +47,11 @@ impl ModalProvider {
     }
 
     async fn call(&self, request: Value) -> Result<Value> {
+        let deadline = if request["operation"] == "prepare_image" {
+            1700
+        } else {
+            55
+        };
         let mut command = Command::new(&self.python);
         if self.credential.is_some() {
             command
@@ -63,7 +68,7 @@ impl ModalProvider {
             .context("could not start Modal Python; set MAGICMTN_MODAL_PYTHON")?;
         let mut input = child.stdin.take().context("adapter stdin missing")?;
         let output = child.stdout.take().context("adapter stdout missing")?;
-        tokio::time::timeout(Duration::from_secs(55), async {
+        tokio::time::timeout(Duration::from_secs(deadline), async {
             let payload = zeroize::Zeroizing::new(serde_json::to_vec(&(
                 &request,
                 self.credential.as_deref(),
@@ -127,6 +132,34 @@ fn sandbox_id(sandbox: &ProviderSandbox) -> Result<()> {
     Ok(())
 }
 impl SandboxBackend for ModalProvider {
+    fn prepare_image<'a>(
+        &'a self,
+        images: &'a std::collections::BTreeMap<String, magicmtn_sdk::image_registry::Image>,
+    ) -> BoxFuture<'a, magicmtn_sdk::image_registry::PreparedImage> {
+        Box::pin(async move {
+            let image = images
+                .get("linux/amd64")
+                .context("Modal requires a linux/amd64 image")?;
+            ensure!(
+                image
+                    .digest
+                    .strip_prefix("sha256:")
+                    .is_some_and(|hash| hash.len() == 64
+                        && hash.bytes().all(|byte| byte.is_ascii_hexdigit())),
+                "invalid image digest"
+            );
+            let result = self
+                .call(json!({"operation":"prepare_image","image":image.reference()}))
+                .await?;
+            let prepared: magicmtn_sdk::image_registry::PreparedImage =
+                serde_json::from_value(result)?;
+            ensure!(
+                prepared.image == *image && prepared.platform == "linux/amd64",
+                "Modal prepared a different image"
+            );
+            Ok(prepared)
+        })
+    }
     fn create<'a>(&'a self, template: &'a str) -> BoxFuture<'a, ProviderSandbox> {
         Box::pin(async move {
             let (image, session) = image_spec(template)?;
@@ -231,6 +264,25 @@ impl SandboxBackend for ModalProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test(flavor = "current_thread")]
+    async fn preparation_rejects_wrong_platform_before_starting_python() {
+        let provider = ModalProvider::new("/must-not-execute");
+        let images = std::collections::BTreeMap::from([(
+            "linux/arm64".into(),
+            magicmtn_sdk::image_registry::Image {
+                repository: "example/image".into(),
+                digest: format!("sha256:{}", "a".repeat(64)),
+            },
+        )]);
+        assert!(
+            provider
+                .prepare_image(&images)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("linux/amd64")
+        );
+    }
     #[test]
     fn validates_session_image_and_remote_identity() {
         let session = "cee98b1a-b843-40f1-97d2-1bfc96c9c676";

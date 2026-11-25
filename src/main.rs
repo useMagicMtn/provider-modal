@@ -11,7 +11,7 @@ async fn main() -> Result<()> {
     magicmtn_provider_framework::run_credentialed(
         "modal",
         env!("CARGO_PKG_VERSION"),
-        Capabilities::sandbox(vec![Create, Terminate, Exec, ExecBounded]),
+        Capabilities::sandbox(vec![PrepareImage, Create, Terminate, Exec, ExecBounded]),
         CredentialSpec {
             fields: vec!["MODAL_TOKEN_ID".into(), "MODAL_TOKEN_SECRET".into()],
         },
@@ -26,6 +26,10 @@ async fn main() -> Result<()> {
                 let provider = provider.clone();
                 Box::pin(async move {
                     match operation {
+                        Operation::SandboxPrepareImage { images } => provider
+                            .prepare_image(&images)
+                            .await
+                            .map(Value::PreparedImage),
                         Operation::SandboxCreate {
                             template,
                             ttl_seconds,
