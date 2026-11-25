@@ -2,27 +2,17 @@
 
 Use a Modal workspace and environment where your token can access the app, prepared image, and sandboxes. Build and install the provider following the [README](README.md). Use a MagicMtn host with support for provider credential protocol v2.
 
-## Install the Modal SDK
-
-For image preparation or direct SDK use, install the provider's pinned dependencies in a virtual environment. Authenticate the preparation environment in the Modal workspace where you will run sandboxes.
+## Install the provider
 
 ```sh
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-.venv/bin/modal setup
+magic provider install modal
 ```
 
-The standalone MagicMtn server starts credentialed providers with a fixed executable search path. Install the dependencies from `requirements.txt` into the shared site-packages of the Python 3.11+ interpreter that resolves as `python3` along that path. For a separate SDK host, supply an absolute interpreter path through `MAGICMTN_MODAL_PYTHON` or `ModalProvider::new`.
-
-On a dedicated host with your own Python installation under `/usr/local`, install the SDK with `/usr/local/bin/python3 -m pip install -r requirements.txt`. Verify the standalone interpreter before configuring the provider.
-
-```sh
-PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin python3 -s -c 'import sys, modal; assert sys.version_info >= (3, 11); assert modal.__version__ == "1.6.1"; print(sys.executable)'
-```
+The package includes a private Python 3.13 runtime, the pinned Modal SDK, and trusted TLS certificates. Installation checks the runtime before activating the provider. Linux packages use glibc. Stop the local server before installing or upgrading a provider.
 
 ## Prepare images with MagicMtn
 
-Start the local server. The Modal app must already exist in the token's environment.
+Start the local server. Configuration creates or selects the `magicmtn` app in the token's workspace and environment.
 
 ```sh
 magic server start
@@ -40,29 +30,43 @@ Save your token in a private file named `modal-credentials.json`:
 In another terminal:
 
 ```sh
-magic --local provider configure modal --secret-file ./modal-credentials.json
-magic --local images list
-magic --local images prepare canonical --provider modal
-magic --local computer new --image canonical --provider modal
+magic provider configure modal --secret-file ./modal-credentials.json
+magic provider verify modal
+magic images list
+magic images prepare canonical --provider modal
+magic computer new --image canonical --provider modal
 ```
+
+Use `--option app=NAME` during configuration to select an app name. Repeated configuration and token rotation preserve the saved app ID. `magic provider verify modal` checks that connection without creating resources.
 
 Preparation imports Canonical's immutable AMD64 image into your Modal app, validates its runtime and Pi in a temporary sandbox, cleans up that sandbox, and saves the prepared image ID in the local deployment. Repeating the command reuses the saved preparation. No image-ID mapping or Canonical edit is needed.
 
 Register an existing custom image with a new name:
 
 ```sh
-magic --local images add my-dev --from ghcr.io/my-org/dev:1.0
-magic --local images prepare my-dev --provider modal
-magic --local computer new --image my-dev --provider modal
+magic images add my-dev --from ghcr.io/my-org/dev:1.0
+magic images prepare my-dev --provider modal
+magic computer new --image my-dev --provider modal
 ```
 
 The image must be readable from its registry and include Python, Pi, `/bin/sh`, `/bin/su`, an executable `/usr/local/bin/magicmtn-sandbox-agent`, and a `sandbox` user with UID and GID 10001 that can write to `/workspace`. Preparation validates your image without modifying it. A failed validation cleans up the temporary sandbox and leaves the image unavailable for named-image launches.
 
 The encrypted credential store retains the token locally. Image preparation uses the verified app connection and records the provider artifact separately for each connection, provider release, platform, and digest. Existing sandboxes retain their frozen image and mapping across provider upgrades.
 
+## Install dependencies for source SDK use
+
+For a host that uses the Rust library directly, install the pinned dependencies in an interpreter dedicated to that host:
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+```
+
+Pass its absolute interpreter path through `ModalProvider::new` or `MAGICMTN_MODAL_PYTHON`. Attach credentials, invoke the `ProviderSetup` contract to configure the app, and persist the returned settings before accepting workload requests.
+
 ## SDK host integration
 
-For executable hosting, pass these settings to the provider process and deliver the Modal token through the protocol v2 credential exchange. Provision the app in Modal before verifying credentials. Account verification returns the app's object ID.
+For executable hosting, use the installed package's runtime environment and deliver the Modal token through the protocol v2 credential exchange. Invoke provider setup explicitly, persist its returned app name and ID, and pass those settings to subsequent provider processes. Account verification checks the saved app and returns its object ID without creating an app.
 
 | Setting                          | Purpose                                                    |
 | -------------------------------- | ---------------------------------------------------------- |

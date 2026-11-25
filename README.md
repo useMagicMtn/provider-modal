@@ -11,11 +11,11 @@ Run MagicMtn sandboxes on [Modal](https://modal.com/). Launch a Linux VM from a 
 
 ## Set up Modal
 
-Use a Modal workspace with a token and an app named `magicmtn`. MagicMtn prepares Canonical or your custom Linux AMD64 image on Modal and saves the resulting image ID locally. See the [setup guide](USAGE.md#prepare-images-with-magicmtn).
+Install the provider with `magic provider install modal` and configure a token for your Modal workspace. Installation includes a private Python runtime and the Modal SDK. Configuration creates or selects an app named `magicmtn`; use `--option app=NAME` to choose another name. MagicMtn prepares Canonical or your custom Linux AMD64 image on Modal and saves the resulting image ID locally. See the [setup guide](USAGE.md#prepare-images-with-magicmtn).
 
 ## Build and install
 
-Install [MagicMtn](https://github.com/useMagicMtn/magicmtn#install-from-source), Rust with edition 2024 support, and Python 3.11 or newer. Keep this checkout beside the `magicmtn` checkout and use the [pinned SDK revision](MODULE.bazel). See the [Python setup](USAGE.md#install-the-modal-sdk) for installing the Modal SDK in the interpreter your host uses.
+Install [MagicMtn](https://github.com/useMagicMtn/magicmtn#install-from-source), Rust with edition 2024 support, Python 3, and `uv==0.13.10`. Keep this checkout beside the `magicmtn` checkout and use the [pinned SDK revision](MODULE.bazel). Packaging builds the private Python runtime and installs the hash-locked dependencies into it.
 
 ```sh
 test -f .cargo/config.toml || cp .cargo/config.toml.example .cargo/config.toml
@@ -23,17 +23,17 @@ test -f .cargo/config.toml || cp .cargo/config.toml.example .cargo/config.toml
 magic provider install --file PATH_TO_PACKAGE
 ```
 
-Replace `PATH_TO_PACKAGE` with the path printed by `package.sh`. Start the local server, then configure the token with `magic --local provider configure modal --secret-file ./modal-credentials.json`. Follow the [setup guide](USAGE.md#prepare-images-with-magicmtn) for image preparation.
+Replace `PATH_TO_PACKAGE` with the path printed by `package.sh`. Start the local server, then configure the token with `magic provider configure modal --secret-file ./modal-credentials.json`. Follow the [setup guide](USAGE.md#prepare-images-with-magicmtn) for image preparation.
 
 ## Run a sandbox
 
 Prepare Canonical and create a sandbox from that catalog selection:
 
 ```sh
-magic --local images prepare canonical --provider modal
-sandbox_id=$(magic --local computer new --provider modal --image canonical)
-magic --local computer exec "$sandbox_id" -- /bin/echo "Hello from Modal"
-magic --local computer terminate "$sandbox_id" --yes
+magic images prepare canonical --provider modal
+sandbox_id=$(magic computer new --provider modal --image canonical)
+magic computer exec "$sandbox_id" -- /bin/echo "Hello from Modal"
+magic computer terminate "$sandbox_id" --yes
 ```
 
 See the [usage guide](USAGE.md) for runtime behavior and SDK integration, and [CONTRIBUTING.md](CONTRIBUTING.md) for development and packaging.
