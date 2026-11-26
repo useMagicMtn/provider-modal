@@ -7,6 +7,8 @@ import re
 import shlex
 import sys
 import time
+import urllib.request
+from urllib.parse import urlsplit
 
 import modal
 from modal.exception import ExecTimeoutError
@@ -14,6 +16,42 @@ from modal.exception import ExecTimeoutError
 
 class ConfigurationError(ValueError):
     """Safe operator guidance; never includes configuration values."""
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # Never forward Proxy Tokens to a redirect destination.
+        return None
+
+
+def inference_url(endpoint):
+    if not isinstance(endpoint, str):
+        raise ConfigurationError('Modal inference requires an HTTPS API base URL')
+    parsed = urlsplit(endpoint)
+    if (parsed.scheme != 'https' or not parsed.hostname or parsed.username is not None
+            or parsed.password is not None or parsed.query or parsed.fragment
+            or any(c.isspace() or ord(c) < 32 for c in endpoint)):
+        raise ConfigurationError('Modal inference requires an HTTPS API base URL without credentials, query, or fragment')
+    return endpoint.rstrip('/')
+
+
+def inference(request, credential):
+    endpoint = inference_url(request['endpoint'])
+    if not credential or any(not credential.get(key) for key in ('MODAL_PROXY_TOKEN_ID', 'MODAL_PROXY_TOKEN_SECRET')):
+        raise ConfigurationError('Modal inference requires Proxy Token credentials')
+    token = credential['MODAL_PROXY_TOKEN_ID'] + '.' + credential['MODAL_PROXY_TOKEN_SECRET']
+    if any(c.isspace() or ord(c) < 32 for c in token):
+        raise ConfigurationError('Invalid Modal Proxy Token credentials')
+    body = json.dumps(request['body'], allow_nan=False).encode()
+    call = urllib.request.Request(endpoint.rstrip('/') + '/chat/completions', data=body,
+                                  headers={'Authorization': 'Bearer ' + token,
+                                           'Content-Type': 'application/json', 'Accept': 'application/json'})
+    # One attempt only: a failed response can still represent completed inference.
+    with urllib.request.build_opener(NoRedirect()).open(call, timeout=290) as response:
+        result = response.read(2 * 1024 * 1024 + 1)
+    if len(result) > 2 * 1024 * 1024:
+        raise ConfigurationError('Modal inference response exceeds 2 MiB')
+    return json.loads(result)
 
 
 def sandbox_command(command):
@@ -106,8 +144,14 @@ async def dispatch(request, client=None):
         if client is None:
             raise ConfigurationError('Modal credentials are required for configuration')
         options = request.get('options', {})
-        if not isinstance(options, dict) or set(options) - {'app'}:
+        if not isinstance(options, dict) or set(options) - {'app', 'inference_url', 'inference_secret_file'}:
             raise ConfigurationError('Unknown Modal setup options')
+        endpoint = options.get('inference_url', os.environ.get('MAGICMTN_MODAL_INFERENCE_URL'))
+        if endpoint is not None:
+            endpoint = inference_url(endpoint)
+        secret_file = options.get('inference_secret_file', os.environ.get('MAGICMTN_MODAL_INFERENCE_SECRET_FILE'))
+        if secret_file is not None and (not isinstance(secret_file, str) or not os.path.isabs(secret_file) or '\0' in secret_file):
+            raise ConfigurationError('Modal inference secret file must use an absolute path')
         name = options.get('app', os.environ.get('MAGICMTN_MODAL_APP', 'magicmtn'))
         if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}', name):
             raise ConfigurationError('Invalid Modal app name')
@@ -116,8 +160,12 @@ async def dispatch(request, client=None):
         app = await modal.App.lookup.aio(name, client=client, create_if_missing=expected is None)
         if expected is not None and app.app_id != expected:
             raise ConfigurationError('Modal app ID differs from the configured account')
-        return {'account': app.app_id,
-                'configuration': {'MAGICMTN_MODAL_APP': name, 'MAGICMTN_MODAL_APP_ID': app.app_id}}
+        configuration = {'MAGICMTN_MODAL_APP': name, 'MAGICMTN_MODAL_APP_ID': app.app_id}
+        if endpoint is not None:
+            configuration['MAGICMTN_MODAL_INFERENCE_URL'] = endpoint
+        if secret_file is not None:
+            configuration['MAGICMTN_MODAL_INFERENCE_SECRET_FILE'] = secret_file
+        return {'account': app.app_id, 'configuration': configuration}
     if request['operation'] == 'prepare_image':
         reference = request['image']
         if not re.fullmatch(r'[a-zA-Z0-9._:/-]+@sha256:[0-9a-f]{64}', reference):
@@ -204,6 +252,9 @@ async def dispatch(request, client=None):
 async def main():
     # Keep Modal API calls within the provider's request deadline.
     request, credential = json.load(sys.stdin)
+    if request.get('operation') == 'infer':
+        # Inference uses Proxy Tokens and does not open a workspace SDK client.
+        return await asyncio.to_thread(inference, request, credential)
     async with asyncio.timeout(1600 if request.get('operation') == 'prepare_image' else 45):
         if credential is None:
             return await dispatch(request)
@@ -222,4 +273,4 @@ if __name__ == '__main__':
         result = {'error': 'Modal operation failed (' + type(error).__name__ + ')'}
         if isinstance(error, ConfigurationError):
             result = {'error': str(error)}
-    print(json.dumps(result, separators=(',', ':')))
+    print(json.dumps(result, separators=(',', ':'), ensure_ascii=False))

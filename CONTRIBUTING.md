@@ -1,6 +1,6 @@
 # Contributing
 
-Follow the [README](README.md) for source installation and the [usage guide](USAGE.md) for Modal configuration. The Rust executable implements the MagicMtn `SandboxBackend` interface using the official Modal Python SDK. The adapter source is embedded in the executable.
+Follow the [README](README.md) for source installation and the [usage guide](USAGE.md) for Modal configuration. The Rust executable implements the MagicMtn `SandboxBackend` interface using the official Modal Python SDK and `InferenceBackend` using OpenAI-compatible HTTPS endpoints. The adapter source is embedded in the executable.
 
 ## Development setup
 
@@ -23,7 +23,7 @@ cargo check --locked --lib --no-default-features
 .venv/bin/python -m unittest discover -s tests
 ```
 
-Bridge unit tests use fake Modal objects. The SDK import test uses the pinned real SDK. Both run without a Modal account. Use an independent Modal app for live verification. Prepare an image, launch a sandbox, run a command, rotate to a second token for the same app, run another command, and terminate the sandbox. Confirm cleanup in Modal.
+Bridge unit tests use fake Modal objects and mocked inference HTTP transport. Rust tests check chat schemas, tool calls, and executable discovery and dispatch. The SDK import test uses the pinned real SDK. Both run without a Modal account. Use an independent Modal app for live verification. Prepare an image, launch a sandbox, run a command, rotate to a second token for the same app, run another command, and terminate the sandbox. Confirm cleanup in Modal.
 
 ## Update Python dependencies
 

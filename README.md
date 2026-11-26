@@ -7,7 +7,7 @@
 
 # Modal provider for MagicMtn
 
-Run MagicMtn sandboxes on [Modal](https://modal.com/). Launch a Linux VM from a prepared image, run commands in its workspace, and terminate it from a standalone MagicMtn installation or a Rust SDK host.
+Run MagicMtn sandboxes and chat inference on [Modal](https://modal.com/). Launch a Linux VM from a prepared image, run commands in its workspace, and terminate it from a standalone MagicMtn installation or a Rust SDK host.
 
 ## Set up Modal
 
@@ -24,6 +24,10 @@ magic provider install --file PATH_TO_PACKAGE
 ```
 
 Replace `PATH_TO_PACKAGE` with the path printed by `package.sh`. Start the local server, then configure the token with `magic provider configure modal --secret-file ./modal-credentials.json`. Follow the [setup guide](USAGE.md#prepare-images-with-magicmtn) for image preparation.
+
+## Run inference
+
+Connect a Modal Model API or a GPU model server with an OpenAI-compatible Chat Completions endpoint. Configure its API base URL, including `/v1`, and supply a Modal Proxy Token to the provider host. The provider implements `InferenceBackend` for text chat, tool calls, and usage reporting alongside `SandboxBackend`. See the [inference setup and SDK example](USAGE.md#chat-inference).
 
 ## Run a sandbox
 

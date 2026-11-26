@@ -1,13 +1,13 @@
 [package]
 name = "magicmtn-provider-modal"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 license = "Apache-2.0"
 publish = false
-description = "Modal sandbox provider for MagicMtn"
+description = "Modal sandbox and chat inference provider for MagicMtn"
 repository = "https://github.com/useMagicMtn/provider-modal"
 readme = "README.md"
-keywords = ["magicmtn", "modal", "sandbox"]
+keywords = ["magicmtn", "modal", "sandbox", "inference"]
 include = [
     "/.cargo/config.toml.example",
     "/.github/assets/*.svg",

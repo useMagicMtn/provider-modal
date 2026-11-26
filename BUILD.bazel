@@ -33,7 +33,7 @@ py_test(
 
 rust_library(
     name = "modal",
-    srcs = ["src/lib.rs"],
+    srcs = ["src/lib.rs", "src/inference.rs"],
     compile_data = ["src/modal_bridge.py"],
     crate_name = "magicmtn_provider_modal",
     edition = "2024",

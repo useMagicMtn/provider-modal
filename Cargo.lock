@@ -95,7 +95,7 @@ dependencies = [
 
 [[package]]
 name = "magicmtn-provider-modal"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "magicmtn-provider-framework",

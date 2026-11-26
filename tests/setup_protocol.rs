@@ -25,6 +25,12 @@ fn configuration_and_verification_are_explicit_workload_startup_is_local() {
         }
     }
     let _cleanup = Cleanup(root.clone());
+    let secret_file = root.join("proxy.json");
+    std::fs::write(
+        &secret_file,
+        r#"{"MODAL_PROXY_TOKEN_ID":"wk-fixture","MODAL_PROXY_TOKEN_SECRET":"ws-fixture"}"#,
+    )
+    .unwrap();
     let log = root.join("calls");
     let python = root.join("python");
     let script = r#"#!/bin/sh
@@ -36,6 +42,11 @@ case "$payload" in
  *'"operation":"verify_account"'*)
   printf 'verify\n' >> '__LOG__'
   printf '%s\n' '"ap-Fixture"' ;;
+ *'"operation":"infer"'*)
+  case "$payload" in *'"MODAL_TOKEN_ID"'*) exit 1 ;; esac
+  case "$payload" in *'"MODAL_PROXY_TOKEN_ID":"wk-fixture"'*) ;; *) exit 1 ;; esac
+  printf 'infer\n' >> '__LOG__'
+  printf '%s\n' '{"model":"resolved","choices":[{"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"total_tokens":2}}' ;;
  *'"operation":"terminate"'*)
   printf 'terminate\n' >> '__LOG__'
   printf '%s\n' 'null' ;;
@@ -53,7 +64,13 @@ esac
     let credential = json!({"MODAL_TOKEN_ID":"fixture","MODAL_TOKEN_SECRET":"fixture"});
     let mut command = Command::new(executable);
     command
+        .env_clear()
         .env("MAGICMTN_MODAL_PYTHON", &python)
+        .env(
+            "MAGICMTN_MODAL_INFERENCE_URL",
+            "https://fixture.modal.run/v1",
+        )
+        .env("MAGICMTN_MODAL_INFERENCE_SECRET_FILE", &secret_file)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped());
     let exchange = |child: &mut std::process::Child, input: Value| -> Value {
@@ -67,6 +84,10 @@ esac
     let mut discovery = command.spawn().unwrap();
     let manifest = exchange(&mut discovery, startup(Value::Null, false));
     assert!(manifest["outcome"]["ok"]["value"]["capabilities"]["setup"].is_object());
+    assert_eq!(
+        manifest["outcome"]["ok"]["value"]["capabilities"]["inference_tasks"],
+        json!(["chat"])
+    );
     assert!(discovery.wait().unwrap().success());
     assert!(!log.exists());
 
@@ -101,11 +122,28 @@ esac
         ),
     );
     assert_eq!(terminated["outcome"]["ok"]["kind"], "done");
-    exchange(&mut provider, operation(4, "shutdown", Value::Null));
+    let inferred = exchange(
+        &mut provider,
+        operation(
+            4,
+            "infer",
+            json!({"request": {
+                "model": {"model":"test","provider":"modal","version":null,"parameters":null},
+                "task":"chat","input":{"messages":[{"role":"user","content":"Hi"}]}
+            }}),
+        ),
+    );
+    assert_eq!(inferred["outcome"]["ok"]["kind"], "inference");
+    assert_eq!(inferred["outcome"]["ok"]["value"]["model"], "resolved");
+    assert_eq!(
+        inferred["outcome"]["ok"]["value"]["output"]["message"]["content"],
+        "hello"
+    );
+    exchange(&mut provider, operation(5, "shutdown", Value::Null));
     assert!(provider.wait().unwrap().success());
     assert_eq!(
         std::fs::read_to_string(&log).unwrap(),
-        "configure\nterminate\n"
+        "configure\nterminate\ninfer\n"
     );
 
     let mut verification = command.spawn().unwrap();
@@ -115,6 +153,6 @@ esac
     assert!(verification.wait().unwrap().success());
     assert_eq!(
         std::fs::read_to_string(&log).unwrap(),
-        "configure\nterminate\nverify\n"
+        "configure\nterminate\ninfer\nverify\n"
     );
 }

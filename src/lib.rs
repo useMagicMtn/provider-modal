@@ -1,4 +1,5 @@
-//! Modal sandboxes through the official Python SDK; the adapter is embedded in the plugin.
+//! Modal sandboxes and OpenAI-compatible chat; the adapter is embedded in the plugin.
+mod inference;
 use anyhow::{Context, Result, bail, ensure};
 use magicmtn_sdk::plugin::CredentialValues;
 use magicmtn_sdk::{BoxFuture, ExecResult, ProviderSandbox, SandboxBackend, ScpDirection};
@@ -16,16 +17,35 @@ const ADAPTER: &str = include_str!("modal_bridge.py");
 pub struct ModalProvider {
     python: String,
     credential: Option<Arc<CredentialValues>>,
+    inference_endpoint: Option<String>,
+    inference_credential: Option<Arc<CredentialValues>>,
+    inference_credential_file: Option<std::path::PathBuf>,
 }
 impl ModalProvider {
     pub fn new(python: impl Into<String>) -> Self {
         Self {
             python: python.into(),
             credential: None,
+            inference_endpoint: None,
+            inference_credential: None,
+            inference_credential_file: None,
         }
     }
     pub fn from_env() -> Self {
-        Self::new(std::env::var("MAGICMTN_MODAL_PYTHON").unwrap_or_else(|_| "python3".into()))
+        let mut provider =
+            Self::new(std::env::var("MAGICMTN_MODAL_PYTHON").unwrap_or_else(|_| "python3".into()));
+        provider.inference_endpoint = std::env::var("MAGICMTN_MODAL_INFERENCE_URL").ok();
+        provider.inference_credential_file =
+            std::env::var_os("MAGICMTN_MODAL_INFERENCE_SECRET_FILE").map(Into::into);
+        let values: std::collections::BTreeMap<String, String> =
+            ["MODAL_PROXY_TOKEN_ID", "MODAL_PROXY_TOKEN_SECRET"]
+                .into_iter()
+                .filter_map(|key| std::env::var(key).ok().map(|value| (key.into(), value)))
+                .collect();
+        if !values.is_empty() {
+            provider.inference_credential = Some(Arc::new(CredentialValues(values)));
+        }
+        provider
     }
     pub fn with_credential(mut self, credential: CredentialValues) -> Self {
         self.credential = Some(Arc::new(credential));
@@ -47,13 +67,28 @@ impl ModalProvider {
     }
 
     async fn call(&self, request: Value) -> Result<Value> {
-        let deadline = if request["operation"] == "prepare_image" {
+        self.call_with_credential(request, self.credential.as_deref())
+            .await
+    }
+
+    async fn call_with_credential(
+        &self,
+        request: Value,
+        credential: Option<&CredentialValues>,
+    ) -> Result<Value> {
+        let inference = request["operation"] == "infer";
+        let deadline = if inference {
+            310
+        } else if request["operation"] == "prepare_image" {
             1700
         } else {
             55
         };
         let mut command = Command::new(&self.python);
-        if self.credential.is_some() {
+        command
+            .env_remove("MODAL_PROXY_TOKEN_ID")
+            .env_remove("MODAL_PROXY_TOKEN_SECRET");
+        if inference || self.credential.is_some() {
             command
                 .env_remove("MODAL_TOKEN_ID")
                 .env_remove("MODAL_TOKEN_SECRET");
@@ -69,17 +104,19 @@ impl ModalProvider {
         let mut input = child.stdin.take().context("adapter stdin missing")?;
         let output = child.stdout.take().context("adapter stdout missing")?;
         tokio::time::timeout(Duration::from_secs(deadline), async {
-            let payload = zeroize::Zeroizing::new(serde_json::to_vec(&(
-                &request,
-                self.credential.as_deref(),
-            ))?);
+            let payload = zeroize::Zeroizing::new(serde_json::to_vec(&(&request, credential))?);
             input.write_all(&payload).await?;
             drop(payload);
             drop(input);
             let mut bytes = Vec::new();
-            output.take(256 * 1024 + 1).read_to_end(&mut bytes).await?;
+            let limit = if inference {
+                4 * 1024 * 1024
+            } else {
+                256 * 1024
+            };
+            output.take(limit + 1).read_to_end(&mut bytes).await?;
             ensure!(
-                bytes.len() <= 256 * 1024,
+                bytes.len() as u64 <= limit,
                 "Modal adapter response too large"
             );
             ensure!(

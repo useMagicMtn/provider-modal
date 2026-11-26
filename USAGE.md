@@ -68,14 +68,71 @@ Pass its absolute interpreter path through `ModalProvider::new` or `MAGICMTN_MOD
 
 For executable hosting, use the installed package's runtime environment and deliver the Modal token through the protocol v2 credential exchange. Invoke provider setup explicitly, persist its returned app name and ID, and pass those settings to subsequent provider processes. Account verification checks the saved app and returns its object ID without creating an app.
 
-| Setting                          | Purpose                                                    |
-| -------------------------------- | ---------------------------------------------------------- |
-| `MAGICMTN_MODAL_APP`             | App name in the Modal environment. Defaults to `magicmtn`. |
-| `MAGICMTN_MODAL_PREPARED_IMAGES` | JSON map from OCI digest references to Modal image IDs.    |
-| `MAGICMTN_MODAL_PYTHON`          | Python interpreter for hosts that set dependency paths.    |
-| `MAGICMTN_MODAL_APP_ID`          | Optional expected Modal app ID for an SDK host.            |
+| Setting                                | Purpose                                                    |
+| -------------------------------------- | ---------------------------------------------------------- |
+| `MAGICMTN_MODAL_APP`                   | App name in the Modal environment. Defaults to `magicmtn`. |
+| `MAGICMTN_MODAL_PREPARED_IMAGES`       | JSON map from OCI digest references to Modal image IDs.    |
+| `MAGICMTN_MODAL_PYTHON`                | Python interpreter for hosts that set dependency paths.    |
+| `MAGICMTN_MODAL_APP_ID`                | Optional expected Modal app ID for an SDK host.            |
+| `MAGICMTN_MODAL_INFERENCE_URL`         | OpenAI-compatible HTTPS API base URL, including `/v1`.     |
+| `MODAL_PROXY_TOKEN_ID`                 | Proxy Token ID for inference endpoint authentication.      |
+| `MODAL_PROXY_TOKEN_SECRET`             | Proxy Token secret for inference endpoint authentication.  |
+| `MAGICMTN_MODAL_INFERENCE_SECRET_FILE` | Absolute path to the private JSON Proxy Token file.        |
 
 For Rust library embedding, use the crate with `default-features = false`. Construct `ModalProvider::new("/absolute/path/to/.venv/bin/python")` with the interpreter path and call `with_credential` with your token pair as `magicmtn_sdk::plugin::CredentialValues`. Set the app and image mapping in the host process before starting it. To create a sandbox, pass `image:<digest-pinned OCI reference>|<session UUID>` to `SandboxBackend::create_with_ttl` and keep the returned `ProviderSandbox` for subsequent commands and termination.
+
+## Chat inference
+
+Use a [Modal Model API](https://modal.com/docs/guide/model-apis) or deploy an [OpenAI-compatible vLLM server](https://modal.com/docs/examples/vllm_inference). Enable Modal Proxy Token authentication on your server and copy the API base URL and served model name from its configuration. The API base URL includes `/v1`; the provider appends `/chat/completions`.
+
+Save your [Modal Proxy Token](https://modal.com/docs/guide/webhook-proxy-auth) pair in a private JSON file on the provider host:
+
+```json
+{
+  "MODAL_PROXY_TOKEN_ID": "YOUR_PROXY_TOKEN_ID",
+  "MODAL_PROXY_TOKEN_SECRET": "YOUR_PROXY_TOKEN_SECRET"
+}
+```
+
+Restrict the file to the host user with `chmod 600 /absolute/path/modal-proxy-credentials.json`. Save the endpoint and absolute secret file path in the provider connection:
+
+```sh
+magic provider configure modal --secret-file ./modal-credentials.json --option inference_url=https://YOUR_ENDPOINT/v1 --option inference_secret_file=/absolute/path/modal-proxy-credentials.json
+```
+
+The workspace token saved by `--secret-file` handles sandbox setup and verification. The separate Proxy Token file stays on the provider host and is read for each inference invocation, allowing token rotation by replacing its contents. Connection configuration stores its path. The provider sends Proxy Tokens to the adapter over stdin and authenticates endpoint requests with `Authorization: Bearer <proxy-token-id>.<proxy-token-secret>`.
+
+SDK hosts can set `MAGICMTN_MODAL_INFERENCE_URL` and `MAGICMTN_MODAL_INFERENCE_SECRET_FILE` in the provider process environment. `ModalProvider::from_env` also accepts `MODAL_PROXY_TOKEN_ID` and `MODAL_PROXY_TOKEN_SECRET` from an explicitly supplied runtime environment. Explicit credentials take precedence over the secret file. Rust hosts attach Proxy Tokens explicitly with `with_inference_credential`:
+
+```rust
+use magicmtn_provider_modal::ModalProvider;
+use magicmtn_sdk::{InferenceBackend, InferenceRequest, InferenceResponse, ModelConfiguration};
+use magicmtn_sdk::plugin::CredentialValues;
+use serde_json::json;
+
+async fn chat() -> anyhow::Result<InferenceResponse> {
+    let provider = ModalProvider::new("/absolute/path/to/.venv/bin/python")
+        .with_inference_endpoint("https://YOUR_ENDPOINT/v1")
+        .with_inference_credential(CredentialValues([
+            ("MODAL_PROXY_TOKEN_ID".into(), std::env::var("MODAL_PROXY_TOKEN_ID")?),
+            ("MODAL_PROXY_TOKEN_SECRET".into(), std::env::var("MODAL_PROXY_TOKEN_SECRET")?),
+        ].into()));
+    provider.infer(&InferenceRequest {
+        model: ModelConfiguration {
+            model: "YOUR_SERVED_MODEL".into(),
+            provider: Some("modal".into()),
+            version: None,
+            parameters: json!({"max_tokens": 512, "temperature": 0.7}),
+        },
+        task: "chat".into(),
+        input: json!({"messages": [{"role": "user", "content": "Hello!"}]}),
+    }).await
+}
+```
+
+The `chat` task accepts text messages and OpenAI function tools. It normalizes historical tool calls and results to the SDK conventions and returns `output.message`, `output.usage`, and `output.finish_reason`, with the served model in `InferenceResponse.model`. Supported parameters are `temperature`, `top_p`, `top_k`, `min_p`, `max_tokens`, `max_completion_tokens`, `stop`, `presence_penalty`, `frequency_penalty`, `repetition_penalty`, `seed`, `response_format`, `tool_choice`, `parallel_tool_calls`, and `reasoning_effort`; the selected endpoint validates model-specific parameter support. Put the served model identifier in `model` and leave `version` empty.
+
+Inference uses non-streaming requests with a 290-second HTTP timeout and a 2 MiB response limit. Configure an HTTPS endpoint directly; redirects are rejected. The provider makes one attempt per invocation. After an uncertain failure, the host decides whether to issue another request. Model deployment and serving capacity are managed through Modal.
 
 ## Sandbox behavior
 

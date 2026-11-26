@@ -46,6 +46,69 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.request = {'operation':'exec','sandbox':{'provider_id':'sb-test','metadata':{'image':self.image, 'runtime':'vm','user':'sandbox','prepared_image':'im-verified'}},
                         'command':'echo','args':['literal; $value'], 'timeout_ms':1000,'max_output_bytes':4}
 
+    async def test_inference_uses_proxy_token_without_workspace_client(self):
+        request = {'operation': 'infer', 'endpoint': 'https://fixture.modal.run/v1/',
+                   'body': {'model': 'model', 'messages': [{'role': 'user', 'content': 'hi'}], 'stream': False}}
+        credential = {'MODAL_PROXY_TOKEN_ID': 'wk-fixture', 'MODAL_PROXY_TOKEN_SECRET': 'ws-fixture'}
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.read.return_value = b'{"model":"resolved","choices":[]}'
+        opener = Mock()
+        opener.open.return_value = response
+        with patch.object(self.bridge.urllib.request, 'build_opener', return_value=opener) as build:
+            with patch.object(self.bridge.json, 'load', return_value=[request, credential]):
+                self.assertEqual((await self.bridge.main())['model'], 'resolved')
+        call = opener.open.call_args.args[0]
+        self.assertEqual(call.full_url, 'https://fixture.modal.run/v1/chat/completions')
+        self.assertEqual(call.get_header('Authorization'), 'Bearer wk-fixture.ws-fixture')
+        self.assertEqual(json.loads(call.data), request['body'])
+        self.assertEqual(opener.open.call_args.kwargs['timeout'], 290)
+        self.assertIsInstance(build.call_args.args[0], self.bridge.NoRedirect)
+        self.assertIsNone(build.call_args.args[0].redirect_request(None, None, 307, '', {}, 'https://other.example'))
+        self.modal.App.lookup.aio.assert_not_awaited()
+        self.modal.Sandbox.create.aio.assert_not_awaited()
+
+    def test_inference_rejects_invalid_targets_and_credentials_before_network(self):
+        with patch.object(self.bridge.urllib.request, 'build_opener') as build:
+            for url in ['http://fixture/v1', 'https://user:secret@fixture/v1', 'https://fixture/v1?secret=x',
+                        'https://fixture/v1#fragment', 'https://fixture/\npath', '/v1']:
+                with self.subTest(url=url), self.assertRaises(self.bridge.ConfigurationError):
+                    self.bridge.inference({'endpoint': url}, {})
+            with self.assertRaises(self.bridge.ConfigurationError):
+                self.bridge.inference({'endpoint': 'https://fixture/v1'}, {})
+            build.assert_not_called()
+
+    def test_inference_bounds_responses_and_does_not_retry(self):
+        request = {'endpoint': 'https://fixture.modal.run/v1', 'body': {}}
+        credential = {'MODAL_PROXY_TOKEN_ID': 'wk-fixture', 'MODAL_PROXY_TOKEN_SECRET': 'ws-fixture'}
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.read.return_value = b'x' * (2 * 1024 * 1024 + 1)
+        opener = Mock()
+        opener.open.return_value = response
+        with patch.object(self.bridge.urllib.request, 'build_opener', return_value=opener):
+            with self.assertRaisesRegex(self.bridge.ConfigurationError, 'exceeds'):
+                self.bridge.inference(request, credential)
+            opener.open.assert_called_once()
+            opener.open.reset_mock()
+            opener.open.side_effect = TimeoutError('private detail')
+            with self.assertRaises(TimeoutError):
+                self.bridge.inference(request, credential)
+            opener.open.assert_called_once()
+
+    async def test_configuration_saves_inference_endpoint(self):
+        with patch.dict('os.environ', {}, clear=True):
+            result = await self.bridge.dispatch({'operation': 'configure', 'options': {
+                'inference_url': 'https://fixture.modal.run/v1/', 'inference_secret_file': '/private/proxy.json'}}, object())
+        self.assertEqual(result['configuration']['MAGICMTN_MODAL_INFERENCE_URL'], 'https://fixture.modal.run/v1')
+        self.assertEqual(result['configuration']['MAGICMTN_MODAL_INFERENCE_SECRET_FILE'], '/private/proxy.json')
+        self.modal.App.lookup.aio.reset_mock()
+        with self.assertRaises(self.bridge.ConfigurationError):
+            await self.bridge.dispatch({'operation': 'configure', 'options': {'inference_url': 'http://bad'}}, object())
+        self.modal.App.lookup.aio.assert_not_awaited()
+
     async def test_create_reattach_exec_and_terminate(self):
         with patch.dict('os.environ', {**self.mapping, 'MAGICMTN_MODAL_APP':'test-app'}):
             result = await self.bridge.dispatch({'operation':'create','image':self.image,'session':'session'})
@@ -100,7 +163,7 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.modal.Sandbox.create.aio.assert_not_awaited()
 
     async def test_configuration_validates_options_before_provider_calls(self):
-        for options in ({'unknown': 'value'}, {'app': '../app'}, {'app': ''}):
+        for options in ({'unknown': 'value'}, {'app': '../app'}, {'app': ''}, {'inference_secret_file': 'relative.json'}):
             with self.assertRaises(self.bridge.ConfigurationError):
                 await self.bridge.dispatch({'operation': 'configure', 'options': options}, object())
         self.modal.App.lookup.aio.assert_not_awaited()

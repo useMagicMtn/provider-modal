@@ -1,7 +1,7 @@
 use anyhow::{Result, bail, ensure};
 use magicmtn_provider_modal::ModalProvider;
 use magicmtn_sdk::{
-    BoxFuture, SandboxBackend,
+    BoxFuture, InferenceBackend, SandboxBackend,
     plugin::{Capabilities, CredentialSpec, Operation, SandboxOperation::*, Value},
     provider_setup::{ConfigurationOption, SetupSpec},
 };
@@ -9,16 +9,34 @@ use std::sync::Arc;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    let capabilities =
+    let mut capabilities =
         Capabilities::sandbox(vec![PrepareImage, Create, Terminate, Exec, ExecBounded]);
+    capabilities.inference_tasks = vec!["chat".into()];
     let setup = SetupSpec {
-        options: [(
-            "app".into(),
-            ConfigurationOption {
-                description: "Modal app name".into(),
-                default: Some("magicmtn".into()),
-            },
-        )]
+        options: [
+            (
+                "app".into(),
+                ConfigurationOption {
+                    description: "Modal app name".into(),
+                    default: Some("magicmtn".into()),
+                },
+            ),
+            (
+                "inference_url".into(),
+                ConfigurationOption {
+                    description: "Modal OpenAI-compatible HTTPS API base URL, including /v1".into(),
+                    default: None,
+                },
+            ),
+            (
+                "inference_secret_file".into(),
+                ConfigurationOption {
+                    description:
+                        "Absolute path to a private JSON file containing Modal Proxy Tokens".into(),
+                    default: None,
+                },
+            ),
+        ]
         .into(),
     };
     magicmtn_provider_framework::run_credentialed_with_setup(
@@ -36,6 +54,9 @@ async fn main() -> Result<()> {
                 let provider = provider.clone();
                 Box::pin(async move {
                     match operation {
+                        Operation::Infer { request } => {
+                            provider.infer(&request).await.map(Value::Inference)
+                        }
                         Operation::SandboxPrepareImage { images } => provider
                             .prepare_image(&images)
                             .await
@@ -74,7 +95,7 @@ async fn main() -> Result<()> {
                             .exec_bounded(&sandbox, &command, &args, timeout_ms, max_output_bytes)
                             .await
                             .map(Value::Exec),
-                        _ => bail!("unsupported sandbox operation"),
+                        _ => bail!("unsupported Modal operation"),
                     }
                 })
             };
