@@ -2,6 +2,7 @@
 import importlib.metadata
 import unittest
 
+from modal_proto import api_pb2
 import modal
 from modal.exception import ExecTimeoutError
 
@@ -16,6 +17,11 @@ class ModalImportTest(unittest.TestCase):
         self.assertTrue(callable(modal.Image.build.aio))
         self.assertTrue(callable(modal.Sandbox.create.aio))
         self.assertTrue(callable(modal.Sandbox.from_id.aio))
+        self.assertTrue(callable(modal.Environment.from_name))
+        self.assertTrue(callable(modal.Environment.from_context))
+        self.assertIn("serving_mode", api_pb2.EndpointCreateRequest.DESCRIPTOR.fields_by_name)
+        self.assertIn("shared_endpoint_notice_acknowledged", api_pb2.EndpointCreateRequest.DESCRIPTOR.fields_by_name)
+        self.assertIn("scoped", api_pb2.WebhookTokenCreateRequest.DESCRIPTOR.fields_by_name)
         self.assertTrue(issubclass(ExecTimeoutError, Exception))
 
 

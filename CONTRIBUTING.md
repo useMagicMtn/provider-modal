@@ -1,6 +1,6 @@
 # Contributing
 
-Follow the [README](README.md) for source installation and the [usage guide](USAGE.md) for Modal configuration. The Rust executable implements the MagicMtn `SandboxBackend` interface using the official Modal Python SDK and `InferenceBackend` using OpenAI-compatible HTTPS endpoints. The adapter source is embedded in the executable.
+Follow the [README](README.md) for source installation and the [usage guide](USAGE.md) for Modal configuration. The Rust executable implements the MagicMtn `SandboxBackend` interface using the official Modal Python SDK and `InferenceBackend` using OpenAI-compatible HTTPS endpoints. `InferenceDeploymentBackend` creates, inspects, and permanently deletes provider-owned endpoints. The adapter source is embedded in the executable.
 
 ## Development setup
 
@@ -23,7 +23,7 @@ cargo check --locked --lib --no-default-features
 .venv/bin/python -m unittest discover -s tests
 ```
 
-Bridge unit tests use fake Modal objects and mocked inference HTTP transport. Rust tests check chat schemas, tool calls, and executable discovery and dispatch. The SDK import test uses the pinned real SDK. Both run without a Modal account. Use an independent Modal app for live verification. Prepare an image, launch a sandbox, run a command, rotate to a second token for the same app, run another command, and terminate the sandbox. Confirm cleanup in Modal.
+Bridge unit tests use fake Modal objects and mocked inference HTTP transport. Rust tests check chat schemas, tool calls, and executable discovery and dispatch. The SDK import test uses the pinned real SDK. All automated tests run without a Modal account. Use an independent Modal app for live verification. Prepare an image, launch a sandbox, run a command, rotate to a second token for the same app, run another command, and terminate the sandbox. Confirm cleanup in Modal.
 
 ## Update Python dependencies
 
@@ -41,6 +41,12 @@ Explicit provider setup creates or selects an app and returns its name and immut
 The adapter resolves each OCI digest to a prepared Modal image ID. It runs the lifetime process and commands as the `sandbox` user and probes the workspace and sandbox agent before returning a new sandbox. The returned metadata records the image, execution user, and VM runtime. Subsequent commands verify these values and the provider's ownership tags before executing. Termination checks ownership and can clean up older provider-owned sandboxes.
 
 The adapter does not replay uncertain remote operations. If a create times out, inspect Modal for `magicmtn-session-<session UUID>` before making another request. The sandbox's wall-clock TTL continues while commands run.
+
+## Managed endpoint verification
+
+Use a private persistent directory and an independent Modal app for live checks. Configure account access and confirm that setup creates no endpoint or Proxy Token. Create a shared inference deployment with an explicit model, repeat creation to confirm endpoint and credential reuse, invoke a small chat request, request deletion, and poll until the remote lifecycle confirms teardown. Revoke the generated test Proxy Token after validation. Endpoint and Proxy Token creation receipts must be durable before remote mutation; a timed-out create must be reconciled by name rather than replayed.
+
+The endpoint adapter uses the pinned SDK's endpoint and Proxy Token protobuf APIs through its synchronizer, keeping RPCs on the authenticated client's event loop. The import test checks the required protobuf fields. Extend the fake-client tests when changing RPC shapes or lifecycle mappings.
 
 ## Package a release
 

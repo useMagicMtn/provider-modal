@@ -31,6 +31,22 @@ impl ModalProvider {
         }
         let body = chat_body(request)
             .map_err(|_| error(ErrorCode::InvalidRequest, "invalid Modal chat request"))?;
+        if let Some(endpoint_id) = request.model.model.strip_prefix("endpoint:") {
+            super::deployments::validate_endpoint_id(endpoint_id)?;
+            ensure!(
+                self.credential.is_some(),
+                "Modal workspace credentials are required"
+            );
+            let raw = self
+                .call(json!({"operation":"infer_endpoint", "endpoint_id":endpoint_id, "body":body}))
+                .await?;
+            return chat_response(&raw).map_err(|_| {
+                error(
+                    ErrorCode::UpstreamUnavailable,
+                    "Modal returned an invalid chat response",
+                )
+            });
+        }
         let endpoint = self
             .inference_endpoint
             .as_deref()
@@ -266,6 +282,22 @@ mod tests {
         assert!(chat_response(&raw).is_err());
         assert!(chat_response(&json!({"model":"x","choices":[]})).is_err());
     }
+    #[tokio::test(flavor = "current_thread")]
+    async fn managed_resource_reference_requires_workspace_credentials() {
+        let provider = ModalProvider::new("/must-not-execute")
+            .with_inference_endpoint("https://fixture.modal.direct/v1");
+        let mut request = request();
+        request.model.model = format!("endpoint:ep-{}", "A".repeat(22));
+        assert!(
+            provider
+                .infer(&request)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("workspace credentials")
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn validates_before_starting_adapter() {
         let mut invalid = request();

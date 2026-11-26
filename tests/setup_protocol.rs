@@ -47,12 +47,23 @@ case "$payload" in
   case "$payload" in *'"MODAL_PROXY_TOKEN_ID":"wk-fixture"'*) ;; *) exit 1 ;; esac
   printf 'infer\n' >> '__LOG__'
   printf '%s\n' '{"model":"resolved","choices":[{"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"total_tokens":2}}' ;;
+ *'"operation":"endpoint_create"'*|*'"operation":"endpoint_status"'*)
+  printf 'deployment\n' >> '__LOG__'
+  printf '%s\n' '{"resource":{"provider_id":"__ENDPOINT__"},"model":"moonshotai/Kimi-K3","inference_model":"endpoint:__ENDPOINT__","state":"ready","ready_replicas":null}' ;;
+ *'"operation":"endpoint_delete"'*)
+  printf 'delete\n' >> '__LOG__'
+  printf '%s\n' 'null' ;;
+ *'"operation":"infer_endpoint"'*)
+  case "$payload" in *'"MODAL_PROXY_TOKEN_ID"'*) exit 1 ;; esac
+  case "$payload" in *'"MODAL_TOKEN_ID":"fixture"'*) ;; *) exit 1 ;; esac
+  printf 'managed-infer\n' >> '__LOG__'
+  printf '%s\n' '{"model":"managed-model","choices":[{"message":{"role":"assistant","content":"managed hello"},"finish_reason":"stop"}]}' ;;
  *'"operation":"terminate"'*)
   printf 'terminate\n' >> '__LOG__'
   printf '%s\n' 'null' ;;
  *) exit 1 ;;
 esac
-"#.replace("__LOG__", &log.to_string_lossy().replace('\'', "'\\''"));
+"#.replace("__LOG__", &log.to_string_lossy().replace('\'', "'\\''")).replace("__ENDPOINT__", &format!("ep-{}", "A".repeat(22)));
     std::fs::write(&python, script).unwrap();
     std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
     let executable = std::env::var_os("MAGICMTN_TEST_PROVIDER")
@@ -87,6 +98,27 @@ esac
     assert_eq!(
         manifest["outcome"]["ok"]["value"]["capabilities"]["inference_tasks"],
         json!(["chat"])
+    );
+    assert_eq!(
+        manifest["outcome"]["ok"]["value"]["capabilities"]["inference_deployment_operations"],
+        json!(["create", "status", "delete"])
+    );
+    assert!(
+        manifest["outcome"]["ok"]["value"]["capabilities"]["setup"]["options"]["state_directory"]
+            .is_object()
+    );
+    assert!(
+        manifest["outcome"]["ok"]["value"]["capabilities"]["setup"]["options"]
+            .get("model")
+            .is_none()
+    );
+    let choices = &manifest["outcome"]["ok"]["value"]["capabilities"]["inference_models"];
+    assert_eq!(choices[0]["id"], "moonshotai/Kimi-K3");
+    assert_eq!(choices[0]["name"], "Kimi K3");
+    assert!(
+        manifest["outcome"]["ok"]["value"]["capabilities"]
+            .get("default_model")
+            .is_none()
     );
     assert!(discovery.wait().unwrap().success());
     assert!(!log.exists());
@@ -139,11 +171,60 @@ esac
         inferred["outcome"]["ok"]["value"]["output"]["message"]["content"],
         "hello"
     );
-    exchange(&mut provider, operation(5, "shutdown", Value::Null));
+    let endpoint = format!("ep-{}", "A".repeat(22));
+    let deployment = exchange(
+        &mut provider,
+        operation(
+            5,
+            "inference_deployment_create",
+            json!({"spec":{
+                "name":"example", "model":"moonshotai/Kimi-K3", "configuration":{}
+            }}),
+        ),
+    );
+    assert_eq!(
+        deployment["outcome"]["ok"]["value"]["resource"]["provider_id"],
+        endpoint
+    );
+    let resource = json!({"provider_id":endpoint});
+    let status = exchange(
+        &mut provider,
+        operation(
+            6,
+            "inference_deployment_status",
+            json!({"resource":resource}),
+        ),
+    );
+    assert_eq!(status["outcome"]["ok"]["value"]["state"], "ready");
+    let managed = exchange(
+        &mut provider,
+        operation(
+            7,
+            "infer",
+            json!({"request":{
+                "model":{"model":format!("endpoint:{endpoint}"),"provider":"modal","version":null,"parameters":null},
+                "task":"chat","input":{"messages":[{"role":"user","content":"Hi"}]}
+            }}),
+        ),
+    );
+    assert_eq!(
+        managed["outcome"]["ok"]["value"]["output"]["message"]["content"],
+        "managed hello"
+    );
+    let deleted = exchange(
+        &mut provider,
+        operation(
+            8,
+            "inference_deployment_delete",
+            json!({"resource":resource}),
+        ),
+    );
+    assert_eq!(deleted["outcome"]["ok"]["kind"], "done");
+    exchange(&mut provider, operation(9, "shutdown", Value::Null));
     assert!(provider.wait().unwrap().success());
     assert_eq!(
         std::fs::read_to_string(&log).unwrap(),
-        "configure\nterminate\ninfer\n"
+        "configure\nterminate\ninfer\ndeployment\ndeployment\nmanaged-infer\ndelete\n"
     );
 
     let mut verification = command.spawn().unwrap();
@@ -153,6 +234,6 @@ esac
     assert!(verification.wait().unwrap().success());
     assert_eq!(
         std::fs::read_to_string(&log).unwrap(),
-        "configure\nterminate\ninfer\nverify\n"
+        "configure\nterminate\ninfer\ndeployment\ndeployment\nmanaged-infer\ndelete\nverify\n"
     );
 }

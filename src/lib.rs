@@ -1,4 +1,5 @@
 //! Modal sandboxes and OpenAI-compatible chat; the adapter is embedded in the plugin.
+mod deployments;
 mod inference;
 use anyhow::{Context, Result, bail, ensure};
 use magicmtn_sdk::plugin::CredentialValues;
@@ -20,6 +21,7 @@ pub struct ModalProvider {
     inference_endpoint: Option<String>,
     inference_credential: Option<Arc<CredentialValues>>,
     inference_credential_file: Option<std::path::PathBuf>,
+    state_directory: Option<std::path::PathBuf>,
 }
 impl ModalProvider {
     pub fn new(python: impl Into<String>) -> Self {
@@ -29,12 +31,17 @@ impl ModalProvider {
             inference_endpoint: None,
             inference_credential: None,
             inference_credential_file: None,
+            state_directory: None,
         }
     }
     pub fn from_env() -> Self {
         let mut provider =
             Self::new(std::env::var("MAGICMTN_MODAL_PYTHON").unwrap_or_else(|_| "python3".into()));
-        provider.inference_endpoint = std::env::var("MAGICMTN_MODAL_INFERENCE_URL").ok();
+        provider.inference_endpoint = std::env::var("MAGICMTN_MODAL_INFERENCE_URL")
+            .ok()
+            .filter(|value| !value.is_empty());
+        provider.state_directory =
+            std::env::var_os("MAGICMTN_MODAL_STATE_DIRECTORY").map(Into::into);
         provider.inference_credential_file =
             std::env::var_os("MAGICMTN_MODAL_INFERENCE_SECRET_FILE").map(Into::into);
         let values: std::collections::BTreeMap<String, String> =
@@ -73,10 +80,16 @@ impl ModalProvider {
 
     async fn call_with_credential(
         &self,
-        request: Value,
+        mut request: Value,
         credential: Option<&CredentialValues>,
     ) -> Result<Value> {
-        let inference = request["operation"] == "infer";
+        if let Some(directory) = &self.state_directory {
+            request["state_directory"] = json!(directory);
+        }
+        let inference = matches!(
+            request["operation"].as_str(),
+            Some("infer" | "infer_endpoint")
+        );
         let deadline = if inference {
             310
         } else if request["operation"] == "prepare_image" {

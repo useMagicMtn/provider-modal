@@ -1,6 +1,6 @@
 module(
     name = "magicmtn_provider_modal",
-    version = "0.3.0",
+    version = "0.4.0",
 )
 
 bazel_dep(name = "magicmtn", version = "0.1.0")
@@ -9,7 +9,7 @@ bazel_dep(name = "rules_python", version = "2.4.6")
 
 git_override(
     module_name = "magicmtn",
-    commit = "ccf74b4e0dd07d2ae6a92c267ac19e9fa2cd6291",
+    commit = "cc0785619db8326c33b91d2aecf4f92994b7a5ab",
     remote = "https://github.com/useMagicMtn/magicmtn.git",
 )
 

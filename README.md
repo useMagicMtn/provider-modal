@@ -11,7 +11,7 @@ Run MagicMtn sandboxes and chat inference on [Modal](https://modal.com/). Launch
 
 ## Set up Modal
 
-Install the provider with `magic provider install modal` and configure a token for your Modal workspace. Installation includes a private Python runtime and the Modal SDK. Configuration creates or selects an app named `magicmtn`; use `--option app=NAME` to choose another name. MagicMtn prepares Canonical or your custom Linux AMD64 image on Modal and saves the resulting image ID locally. See the [setup guide](USAGE.md#prepare-images-with-magicmtn).
+Install the provider with `magic provider install modal` and configure a token for your Modal workspace. Installation includes a private Python runtime and the Modal SDK. Configuration creates or selects an app named `magicmtn` and establishes account access; use `--option app=NAME` to choose another app name. MagicMtn prepares Canonical or your custom Linux AMD64 image on Modal and saves the resulting image ID locally. See the [setup guide](USAGE.md#prepare-images-with-magicmtn).
 
 ## Build and install
 
@@ -27,7 +27,7 @@ Replace `PATH_TO_PACKAGE` with the path printed by `package.sh`. Start the local
 
 ## Run inference
 
-Connect a Modal Model API or a GPU model server with an OpenAI-compatible Chat Completions endpoint. Configure its API base URL, including `/v1`, and supply a Modal Proxy Token to the provider host. The provider implements `InferenceBackend` for text chat, tool calls, and usage reporting alongside `SandboxBackend`. See the [inference setup and SDK example](USAGE.md#chat-inference).
+Configure your workspace token with `magic provider configure modal --secret-file ./modal-credentials.json`. When the host creates an inference deployment for a selected model, the provider provisions its endpoint, discovers its URL, and manages the inference credentials. The provider implements `InferenceBackend` for chat, tool calls, and usage reporting, `InferenceDeploymentBackend` for endpoint creation, inspection, and deletion, and `SandboxBackend` for isolated compute. See the [inference setup and SDK example](USAGE.md#chat-inference).
 
 ## Run a sandbox
 

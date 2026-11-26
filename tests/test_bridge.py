@@ -8,6 +8,30 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
+# Load the native protobuf module before patch.dict snapshots sys.modules.
+# Evicting and reimporting it while live messages exist can crash Python 3.13.
+from modal_proto import api_pb2
+
+
+class AuthError(Exception):
+    pass
+
+
+class PermissionDeniedError(Exception):
+    pass
+
+
+class ConflictError(Exception):
+    pass
+
+
+class InvalidError(Exception):
+    pass
+
+
+class NotFoundError(Exception):
+    pass
+
 
 class ExecTimeoutError(Exception):
     pass
@@ -32,8 +56,11 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
                                     from_id=SimpleNamespace(aio=AsyncMock())))
         spec = importlib.util.spec_from_file_location('bridge', Path(__file__).parents[1] / 'src/modal_bridge.py')
         self.bridge = importlib.util.module_from_spec(spec)
-        with patch.dict(sys.modules, {'modal': self.modal, 'modal.exception': SimpleNamespace(ExecTimeoutError=ExecTimeoutError)}):
+        with patch.dict(sys.modules, {'modal': self.modal, 'modal.exception': SimpleNamespace(ExecTimeoutError=ExecTimeoutError, NotFoundError=NotFoundError, ConflictError=ConflictError, InvalidError=InvalidError, AuthError=AuthError, PermissionDeniedError=PermissionDeniedError)}):
             spec.loader.exec_module(self.bridge)
+        async def modal_rpc(client, method, request):
+            return await getattr(client._stub, method)(request)
+        self.bridge.modal_rpc = modal_rpc
         self.image = 'registry.example/sandbox@sha256:' + 'a' * 64
         self.mapping = {'MAGICMTN_MODAL_PREPARED_IMAGES': json.dumps({self.image: 'im-verified'})}
         self.tags = {'magicmtn':'modal','magicmtn_session':'session','magicmtn_image':self.image, 'magicmtn_runtime':'vm','magicmtn_user':'sandbox','magicmtn_prepared_image':'im-verified'}
@@ -45,6 +72,226 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.modal.Sandbox.from_id.aio.return_value = self.sandbox
         self.request = {'operation':'exec','sandbox':{'provider_id':'sb-test','metadata':{'image':self.image, 'runtime':'vm','user':'sandbox','prepared_image':'im-verified'}},
                         'command':'echo','args':['literal; $value'], 'timeout_ms':1000,'max_output_bytes':4}
+
+    def managed_client(self):
+        api = api_pb2
+        self.api = api
+        self.endpoint_id = 'ep-' + 'A' * 22
+        self.remote = {'name': '', 'model': '', 'status': api.EndpointGetInfoResponse.ENDPOINT_STATUS_LIVE,
+                       'lifecycle': api.ENDPOINT_LIFECYCLE_STATUS_ACTIVE}
+        async def create(request):
+            self.remote.update(name=request.name, model=request.model.base_model_repo_id)
+            return api.EndpointCreateResponse(endpoint_id=self.endpoint_id, name=request.name)
+        async def info(request):
+            self.assertEqual(request.endpoint_id, self.endpoint_id)
+            return api.EndpointGetInfoResponse(info=api.EndpointGetInfoResponse.EndpointInfoSummary(
+                name=self.remote['name'], repo_id=self.remote['model'], service_url='https://fixture.us-west.modal.direct',
+                requires_proxy_auth=True, serving_mode=api.ENDPOINT_SERVING_MODE_SHARED,
+                status=self.remote['status'], lifecycle=api.EndpointLifecycle(
+                    status=self.remote['lifecycle'], environment_name='main')))
+        stub = SimpleNamespace(
+            EndpointGetByName=AsyncMock(return_value=api.EndpointGetByNameResponse()),
+            EndpointCreate=AsyncMock(side_effect=create), EndpointGetInfo=AsyncMock(side_effect=info),
+            EndpointGetLifecycle=AsyncMock(return_value=api.EndpointGetLifecycleResponse(
+                lifecycle=api.EndpointLifecycle(status=api.ENDPOINT_LIFECYCLE_STATUS_STOPPED, environment_name='main'))),
+            EndpointStop=AsyncMock(),
+            WebhookTokenCreate=AsyncMock(return_value=SimpleNamespace(token_id='wk-Fixture', token_secret='ws-Fixture')),
+            WebhookTokenEnvironmentAdd=AsyncMock(),
+        )
+        environment = SimpleNamespace(object_id='en-Fixture', name='main')
+        self.modal.Environment = SimpleNamespace(from_name=Mock(return_value=SimpleNamespace(
+            hydrate=SimpleNamespace(aio=AsyncMock(return_value=environment)))))
+        self.modal.Environment.from_context = self.modal.Environment.from_name
+        return SimpleNamespace(_stub=stub)
+
+    def managed_request(self, directory):
+        return {'operation': 'endpoint_create', 'state_directory': directory,
+                'spec': {'name': 'example', 'model': 'acme/ChosenModel', 'configuration': {}}}
+
+    async def test_account_configuration_does_not_provision_models_or_credentials(self):
+        import tempfile
+        client = self.managed_client()
+        with tempfile.TemporaryDirectory() as directory, patch.dict('os.environ', {}, clear=True):
+            request = {'operation': 'configure', 'options': {'state_directory': directory}}
+            first = await self.bridge.dispatch(request, client)
+            self.assertEqual(first['configuration'], {'MAGICMTN_MODAL_APP': 'magicmtn',
+                'MAGICMTN_MODAL_APP_ID': 'ap-TestApp', 'MAGICMTN_MODAL_STATE_DIRECTORY': directory})
+            # A saved model must not make credential rotation provision anything.
+            with patch.dict('os.environ', {**first['configuration'], 'MAGICMTN_MODAL_MODEL': 'legacy/model'}, clear=True):
+                second = await self.bridge.dispatch({'operation': 'configure', 'options': {}}, client)
+            self.assertEqual(first, second)
+            self.assertEqual(list(Path(directory).iterdir()), [])
+            for method in vars(client._stub).values():
+                method.assert_not_awaited()
+            self.modal.Environment.from_name.assert_not_called()
+            self.modal.Sandbox.create.aio.assert_not_awaited()
+
+    async def test_managed_creation_uses_requested_model_and_reuses_private_credentials(self):
+        import tempfile
+        client = self.managed_client()
+        with tempfile.TemporaryDirectory() as directory, patch.dict('os.environ', {}, clear=True):
+            request = self.managed_request(directory)
+            first = await self.bridge.dispatch(request, client)
+            self.assertEqual(first['resource']['provider_id'], self.endpoint_id)
+            self.assertEqual(first['model'], 'acme/ChosenModel')
+            self.assertNotIn('ws-Fixture', json.dumps(first))
+            create = client._stub.EndpointCreate.call_args.args[0]
+            self.assertEqual(create.model.base_model_repo_id, 'acme/ChosenModel')
+            self.assertEqual(create.serving_mode, self.api.ENDPOINT_SERVING_MODE_SHARED)
+            self.assertTrue(create.shared_endpoint_notice_acknowledged)
+            self.assertFalse(create.unauthenticated)
+            self.assertTrue(client._stub.WebhookTokenCreate.call_args.args[0].scoped)
+            token = Path(directory) / 'proxy.json'
+            self.assertEqual(token.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(json.loads(token.read_text())['MODAL_PROXY_TOKEN_SECRET'], 'ws-Fixture')
+            second = await self.bridge.dispatch(request, client)
+            self.assertEqual(first, second)
+            client._stub.EndpointCreate.assert_awaited_once()
+            client._stub.WebhookTokenCreate.assert_awaited_once()
+            with self.assertRaisesRegex(self.bridge.ConfigurationError, 'configuration changed'):
+                await self.bridge.dispatch(dict(request, spec=dict(request['spec'], model='other/model')), client)
+            client._stub.EndpointCreate.assert_awaited_once()
+
+    async def test_managed_create_reconciles_uncertain_outcomes_without_replaying(self):
+        import tempfile
+        client = self.managed_client()
+        create = client._stub.EndpointCreate.side_effect
+        async def uncertain(request):
+            await create(request)
+            raise TimeoutError('upstream detail')
+        client._stub.EndpointCreate.side_effect = uncertain
+        with tempfile.TemporaryDirectory() as directory, patch.dict('os.environ', {}, clear=True):
+            request = {'operation': 'endpoint_create', 'state_directory': directory,
+                       'spec': {'name': 'example', 'model': 'moonshotai/Kimi-K3', 'configuration': {}}}
+            with self.assertRaises(TimeoutError):
+                await self.bridge.dispatch(request, client)
+            with self.assertRaisesRegex(self.bridge.ConfigurationError, 'outcome is uncertain'):
+                await self.bridge.dispatch(request, client)
+            client._stub.EndpointCreate.assert_awaited_once()
+            client._stub.EndpointGetByName.return_value = self.api.EndpointGetByNameResponse(endpoint_id=self.endpoint_id)
+            result = await self.bridge.dispatch(request, client)
+            self.assertEqual(result['resource']['provider_id'], self.endpoint_id)
+            client._stub.EndpointCreate.assert_awaited_once()
+
+    async def test_managed_token_uncertainty_stops_before_endpoint_creation(self):
+        import tempfile
+        client = self.managed_client()
+        client._stub.WebhookTokenCreate.side_effect = TimeoutError('secret detail')
+        with tempfile.TemporaryDirectory() as directory, patch.dict('os.environ', {}, clear=True):
+            request = self.managed_request(directory)
+            with self.assertRaises(TimeoutError):
+                await self.bridge.dispatch(request, client)
+            with self.assertRaisesRegex(self.bridge.ConfigurationError, 'Token creation outcome is uncertain'):
+                await self.bridge.dispatch(request, client)
+            client._stub.EndpointCreate.assert_not_awaited()
+            client._stub.WebhookTokenCreate.assert_awaited_once()
+            state = json.loads((Path(directory) / 'deployments.json').read_text())
+            self.assertEqual(state['deployments'], {})
+
+    async def test_definitive_rejection_allows_reconfiguration_after_permissions_are_fixed(self):
+        import tempfile
+        client = self.managed_client()
+        with tempfile.TemporaryDirectory() as directory, patch.dict('os.environ', {}, clear=True):
+            request = self.managed_request(directory)
+            client._stub.WebhookTokenCreate.side_effect = PermissionDeniedError()
+            with self.assertRaises(PermissionDeniedError):
+                await self.bridge.dispatch(request, client)
+            client._stub.WebhookTokenCreate.side_effect = None
+            original_create = client._stub.EndpointCreate.side_effect
+            client._stub.EndpointCreate.side_effect = ConflictError()
+            with self.assertRaises(ConflictError):
+                await self.bridge.dispatch(request, client)
+            client._stub.EndpointCreate.side_effect = original_create
+            result = await self.bridge.dispatch(request, client)
+            self.assertEqual(result['resource']['provider_id'], self.endpoint_id)
+            self.assertEqual(client._stub.WebhookTokenCreate.await_count, 2)
+            self.assertEqual(client._stub.EndpointCreate.await_count, 2)
+
+    async def test_managed_status_deletion_and_ownership(self):
+        import tempfile
+        client = self.managed_client()
+        with tempfile.TemporaryDirectory() as directory, patch.dict('os.environ', {}, clear=True):
+            await self.bridge.dispatch(self.managed_request(directory), client)
+            request = {'operation': 'endpoint_status', 'endpoint_id': self.endpoint_id, 'state_directory': directory}
+            result = await self.bridge.dispatch(request, client)
+            self.assertEqual(result['state'], 'ready')
+            self.assertIsNone(result['ready_replicas'])
+            self.assertEqual(result['inference_model'], 'endpoint:' + self.endpoint_id)
+            with self.assertRaisesRegex(self.bridge.ConfigurationError, 'not managed'):
+                await self.bridge.dispatch(dict(request, endpoint_id='ep-' + 'B' * 22, operation='endpoint_delete'), client)
+            client._stub.EndpointStop.assert_not_awaited()
+            self.remote['model'] = 'other/model'
+            with self.assertRaisesRegex(self.bridge.ConfigurationError, 'configuration changed'):
+                await self.bridge.dispatch(dict(request, operation='endpoint_delete'), client)
+            client._stub.EndpointStop.assert_not_awaited()
+            self.remote['model'] = 'acme/ChosenModel'
+            await self.bridge.dispatch(dict(request, operation='endpoint_delete'), client)
+            client._stub.EndpointStop.assert_awaited_once()
+            # A successful delete request alone is not proof of released capacity.
+            self.assertEqual((await self.bridge.dispatch(request, client))['state'], 'ready')
+            self.remote['lifecycle'] = self.api.ENDPOINT_LIFECYCLE_STATUS_STOPPED
+            self.assertEqual((await self.bridge.dispatch(request, client))['state'], 'deleted')
+            await self.bridge.dispatch(dict(request, operation='endpoint_delete'), client)
+            client._stub.EndpointStop.assert_awaited_once()
+            client._stub.EndpointGetInfo.side_effect = NotFoundError()
+            self.assertEqual((await self.bridge.dispatch(request, client))['state'], 'deleted')
+            client._stub.EndpointGetLifecycle.side_effect = NotFoundError()
+            with self.assertRaises(NotFoundError):
+                await self.bridge.dispatch(request, client)
+
+    async def test_managed_inference_discovers_url_and_keeps_credentials_out_of_responses(self):
+        import tempfile
+        client = self.managed_client()
+        with tempfile.TemporaryDirectory() as directory, patch.dict('os.environ', {}, clear=True):
+            await self.bridge.dispatch(self.managed_request(directory), client)
+            request = {'operation': 'infer_endpoint', 'endpoint_id': self.endpoint_id, 'state_directory': directory,
+                       'body': {'model': 'endpoint:' + self.endpoint_id, 'messages': [{'role': 'user', 'content': 'Hello'}]}}
+            def inference(call, credential):
+                self.assertEqual(call['endpoint'], 'https://fixture.us-west.modal.direct/v1')
+                self.assertEqual(call['body']['model'], self.remote['name'])
+                self.assertEqual(credential['MODAL_PROXY_TOKEN_SECRET'], 'ws-Fixture')
+                # Model execution does not hold the state lock.
+                with self.bridge.managed_state(dict(request, operation='endpoint_create'), 'ap-TestApp'):
+                    pass
+                return {'model': 'resolved', 'choices': []}
+            with patch.object(self.bridge, 'inference', side_effect=inference):
+                result = await self.bridge.dispatch(request, client)
+            self.assertEqual(result['model'], 'resolved')
+            self.assertNotIn('ws-Fixture', json.dumps(result))
+            client._stub.EndpointCreate.assert_awaited_once()
+
+    async def test_managed_state_refuses_public_credentials_and_directory_permissions(self):
+        import tempfile
+        client = self.managed_client()
+        with tempfile.TemporaryDirectory() as directory, patch.dict('os.environ', {}, clear=True):
+            await self.bridge.dispatch(self.managed_request(directory), client)
+            token = Path(directory) / 'proxy.json'
+            token.chmod(0o644)
+            request = {'operation': 'infer_endpoint', 'endpoint_id': self.endpoint_id, 'state_directory': directory, 'body': {}}
+            with patch.object(self.bridge, 'inference') as inference:
+                with self.assertRaisesRegex(self.bridge.ConfigurationError, 'must be private'):
+                    await self.bridge.dispatch(request, client)
+                inference.assert_not_called()
+            token.chmod(0o600)
+            Path(directory).chmod(0o755)
+            try:
+                with self.assertRaisesRegex(self.bridge.ConfigurationError, 'private directory'):
+                    await self.bridge.dispatch(dict(request, operation='endpoint_delete'), client)
+                client._stub.EndpointStop.assert_not_awaited()
+            finally:
+                Path(directory).chmod(0o700)
+
+    async def test_managed_configuration_rejects_unsupported_options_before_mutation(self):
+        import tempfile
+        client = self.managed_client()
+        with tempfile.TemporaryDirectory() as directory, patch.dict('os.environ', {}, clear=True):
+            for configuration in [[], {'unknown': True}, {'serving_mode': 'invalid'}, {'routing_region': 'invalid'}]:
+                request = {'operation': 'endpoint_create', 'state_directory': directory,
+                           'spec': {'name': 'example', 'model': 'moonshotai/Kimi-K3', 'configuration': configuration}}
+                with self.assertRaises(self.bridge.ConfigurationError):
+                    await self.bridge.dispatch(request, client)
+            client._stub.EndpointCreate.assert_not_awaited()
+            client._stub.WebhookTokenCreate.assert_not_awaited()
 
     async def test_inference_uses_proxy_token_without_workspace_client(self):
         request = {'operation': 'infer', 'endpoint': 'https://fixture.modal.run/v1/',
@@ -163,7 +410,7 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.modal.Sandbox.create.aio.assert_not_awaited()
 
     async def test_configuration_validates_options_before_provider_calls(self):
-        for options in ({'unknown': 'value'}, {'app': '../app'}, {'app': ''}, {'inference_secret_file': 'relative.json'}):
+        for options in ({'unknown': 'value'}, {'app': '../app'}, {'app': ''}, {'model': 'acme/model'}, {'inference_secret_file': 'relative.json'}):
             with self.assertRaises(self.bridge.ConfigurationError):
                 await self.bridge.dispatch({'operation': 'configure', 'options': options}, object())
         self.modal.App.lookup.aio.assert_not_awaited()

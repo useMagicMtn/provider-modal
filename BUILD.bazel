@@ -33,7 +33,7 @@ py_test(
 
 rust_library(
     name = "modal",
-    srcs = ["src/lib.rs", "src/inference.rs"],
+    srcs = ["src/lib.rs", "src/inference.rs", "src/deployments.rs"],
     compile_data = ["src/modal_bridge.py"],
     crate_name = "magicmtn_provider_modal",
     edition = "2024",
@@ -70,6 +70,7 @@ rust_test(
 
 py_test(
     name = "bridge_test",
+    deps = [requirement("modal")],
     srcs = [
         "tests/run_bridge_tests.py",
         "tests/test_bridge.py",
